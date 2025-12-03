@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Mitt Spel - Rum</title>
+    <style>
+        body {
+            margin: 0;
+            background: radial-gradient(circle at top, #1b2735 0, #090a0f 60%);
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            padding-top: 20px;
+            font-family: Arial, sans-serif;
+        }
+        #gameArea {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        canvas {
+            border: 2px solid #111;
+            background-color: #101522;
+            box-shadow: 0 0 25px rgba(0, 0, 0, 0.7);
+        }
+
+        #chatContainer {
+            width: 800px;
+            margin-top: 10px;
+            display: flex;
+            flex-direction: column;
+            border: 1px solid #222;
+            background: linear-gradient(135deg, rgba(12, 16, 32, 0.98), rgba(20, 32, 56, 0.98));
+            color: #f5f5f5;
+        }
+        #chatMessages {
+            height: 150px;
+            overflow-y: scroll;
+            padding: 10px;
+            font-size: 14px;
+        }
+        #chatMessages div {
+            margin-bottom: 4px;
+        }
+        #chatInput {
+            width: 100%;
+            padding: 8px;
+            box-sizing: border-box;
+            border: none;
+            border-top: 1px solid #333;
+            background-color: #050814;
+            color: #f5f5f5;
+        }
+        #chatInput::placeholder {
+            color: #777;
+        }
+        
+        #nameModal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.85);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+        }
+        #nameInputContainer {
+            background-color: #1a1a1a;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.5);
+            text-align: center;
+            color: #fff;
+        }
+        #nameInputContainer h2 {
+            margin-top: 0;
+            color: #4da3ff;
+        }
+        #playerNameInput {
+            padding: 10px;
+            margin-bottom: 15px;
+            border: 1px solid #444;
+            background-color: #000;
+            color: #fff;
+            width: 250px;
+            box-sizing: border-box;
+            font-size: 16px;
+        }
+        #submitNameBtn {
+            padding: 10px 20px;
+            background-color: #4da3ff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background-color 0.2s;
+        }
+        #submitNameBtn:hover {
+            background-color: #387bd8;
+        }
+    </style>
+</head>
+<body>
+    
+    <div id="nameModal">
+        <div id="nameInputContainer">
+            <h2>Välj ditt spelarnamn</h2>
+            <input type="text" id="playerNameInput" maxlength="12" placeholder="Skriv namn här...">
+            <button id="submitNameBtn">Gå in i rummet</button>
+        </div>
+    </div>
+
+    <div id="gameArea">
+        <canvas id="gameCanvas" width="800" height="600"></canvas>
+        
+        <div id="chatContainer">
+            <div id="chatMessages"></div>
+            <input id="chatInput" type="text" placeholder="Skriv ett meddelande och tryck Enter..." maxlength="80">
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        let otherPlayers = {};
+
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const chatInput = document.getElementById('chatInput');
+        const chatMessages = document.getElementById('chatMessages');
+        
+        const nameModal = document.getElementById('nameModal');
+        const playerNameInput = document.getElementById('playerNameInput');
+        const submitNameBtn = document.getElementById('submitNameBtn');
+
+        let player = {
+            x: 0,
+            y: 0,
+            radius: 20,
+            color: 'blue',
+            name: 'Okänd',
+            chatMessage: null,
+            chatExpiresAt: null
+        };
+
+        const SPEED = 5;
+        let keys = {};
+        let gameStarted = false;
+
+        playerNameInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                submitNameBtn.click();
+            }
+        });
+
+        submitNameBtn.addEventListener('click', () => {
+            let name = playerNameInput.value.trim();
+            if (name.length < 2) {
+                alert("Namnet måste vara minst 2 tecken långt!");
+                return;
+            }
+            player.name = name;
+            nameModal.style.display = 'none';
+            gameStarted = true;
+            
+            socket.emit('playerReady', { name: player.name });
+
+            gameLoop(); 
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if (!gameStarted) return;
+            if (document.activeElement !== chatInput) {
+                keys[e.key] = true;
+            }
+        });
+        document.addEventListener('keyup', (e) => {
+            if (!gameStarted) return;
+            keys[e.key] = false;
+        });
+
+        function updatePlayerPosition() {
+            let moved = false;
+
+            if (keys['ArrowUp'] || keys['w']) { player.y -= SPEED; moved = true; }
+            if (keys['ArrowDown'] || keys['s']) { player.y += SPEED; moved = true; }
+            if (keys['ArrowLeft'] || keys['a']) { player.x -= SPEED; moved = true; }
+            if (keys['ArrowRight'] || keys['d']) { player.x += SPEED; moved = true; }
+
+            if (moved) {
+                const minX = player.radius;
+                const maxX = canvas.width - player.radius;
+                const minY = player.radius;
+                const maxY = canvas.height - player.radius;
+
+                if (player.x < minX) player.x = minX;
+                if (player.x > maxX) player.x = maxX;
+                if (player.y < minY) player.y = minY;
+                if (player.y > maxY) player.y = maxY;
+
+                socket.emit('playerMovement', { x: player.x, y: player.y });
+            }
+        }
+
+        function drawPlayer(p, isSelf = false, nowTime = Date.now()) {
+            const r = p.radius || 20;
+
+            ctx.save();
+
+            ctx.fillStyle = p.color || (isSelf ? '#4da3ff' : '#6dd5ed');
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.strokeStyle = 'black';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+
+            const nameToDisplay = p.name || (isSelf ? 'DU' : 'KOMPIS'); 
+            ctx.fillStyle = isSelf ? 'white' : '#f1f1f1';
+            ctx.font = 'bold 14px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(nameToDisplay, p.x, p.y + 1); 
+
+            if (p.chatMessage && (!p.chatExpiresAt || nowTime <= p.chatExpiresAt)) {
+                const text = p.chatMessage;
+                ctx.font = '13px Arial';
+                const paddingX = 8;
+                const textWidth = ctx.measureText(text).width;
+                const boxWidth = Math.min(textWidth + paddingX * 2, 260);
+                const boxHeight = 24;
+                let boxX = p.x - boxWidth / 2;
+                let boxY = p.y - r - 40;
+
+                ctx.beginPath();
+                if (ctx.roundRect) {
+                    ctx.fillStyle = 'rgba(255,255,255,0.96)';
+                    ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+                    ctx.lineWidth = 2;
+                    ctx.roundRect(boxX, boxY, boxWidth, boxHeight, 10);
+                    ctx.fill();
+                    ctx.stroke();
+                } else {
+                    ctx.fillStyle = 'rgba(255,255,255,0.96)';
+                    ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+                    ctx.lineWidth = 2;
+                    ctx.rect(boxX, boxY, boxWidth, boxHeight);
+                    ctx.fill();
+                    ctx.stroke();
+                }
+
+                ctx.beginPath();
+                const tipX = p.x;
+                const tipY = p.y - r + 2;
+                ctx.moveTo(tipX - 8, boxY + boxHeight);
+                ctx.lineTo(tipX + 3, boxY + boxHeight);
+                ctx.lineTo(tipX - 3, tipY);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+
+                ctx.fillStyle = '#000';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(text, p.x, boxY + boxHeight / 2);
+            }
+
+            ctx.restore();
+        }
+
+        chatInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                const message = chatInput.value.trim();
+                if (message) {
+                    socket.emit('chatMessage', message);
+                    chatInput.value = '';
+                }
+            }
+        });
+
+        socket.on('message', function(data) {
+            const senderName = data.senderName || data.senderId.substring(0, 4); 
+            const item = document.createElement('div');
+            item.innerHTML = `<strong>${senderName}:</strong> ${data.message}`;
+            chatMessages.appendChild(item);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+
+            const isSelf = data.senderId === socket.id;
+            const now = Date.now();
+            const duration = 4000;
+
+            if (isSelf) {
+                player.chatMessage = data.message;
+                player.chatExpiresAt = now + duration;
+            } else if (otherPlayers[data.senderId]) {
+                otherPlayers[data.senderId].chatMessage = data.message;
+                otherPlayers[data.senderId].chatExpiresAt = now + duration;
+            }
+        });
+
+        socket.on('currentPlayers', (playersData) => {
+            otherPlayers = {};
+            for (let id in playersData) {
+                const p = playersData[id];
+                p.radius = p.radius || 20;
+
+                if (id === socket.id) {
+                    player.x = p.x;
+                    player.y = p.y;
+                    player.color = p.color;
+                    player.radius = p.radius;
+                    player.name = p.name || player.name;
+                } else {
+                    otherPlayers[id] = {
+                        x: p.x,
+                        y: p.y,
+                        color: p.color,
+                        radius: p.radius,
+                        name: p.name || 'Kommer snart',
+                        socketId: p.socketId,
+                        chatMessage: null,
+                        chatExpiresAt: null
+                    };
+                }
+            }
+        });
+        
+        socket.on('playerReady', (playerInfo) => {
+            if (otherPlayers[playerInfo.socketId]) {
+                otherPlayers[playerInfo.socketId].name = playerInfo.name;
+            }
+        });
+
+        socket.on('newPlayer', (playerInfo) => {
+            playerInfo.radius = playerInfo.radius || 20;
+            otherPlayers[playerInfo.socketId] = {
+                ...playerInfo,
+                name: playerInfo.name || 'Ny Spelare',
+                chatMessage: null,
+                chatExpiresAt: null
+            };
+        });
+
+        socket.on('playerMoved', (playerInfo) => {
+            playerInfo.radius = playerInfo.radius || 20;
+            if (!otherPlayers[playerInfo.socketId]) {
+                otherPlayers[playerInfo.socketId] = {
+                    ...playerInfo,
+                    name: playerInfo.name || 'Ny Spelare',
+                    chatMessage: null,
+                    chatExpiresAt: null
+                };
+            } else {
+                const op = otherPlayers[playerInfo.socketId];
+                op.x = playerInfo.x;
+                op.y = playerInfo.y;
+                op.color = playerInfo.color;
+                op.radius = playerInfo.radius;
+                op.name = playerInfo.name || op.name;
+            }
+        });
+
+        socket.on('playerDisconnected', (socketId) => {
+            delete otherPlayers[socketId];
+        });
+
+        function gameLoop() {
+            if (!gameStarted) {
+                requestAnimationFrame(gameLoop);
+                return; 
+            }
+            const now = Date.now();
+
+            const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+            gradient.addColorStop(0, '#15192b');
+            gradient.addColorStop(0.5, '#1d3659');
+            gradient.addColorStop(1, '#234f5e');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            updatePlayerPosition();
+
+            if (player.chatMessage && player.chatExpiresAt && now > player.chatExpiresAt) {
+                player.chatMessage = null;
+                player.chatExpiresAt = null;
+            }
+            for (let id in otherPlayers) {
+                const op = otherPlayers[id];
+                if (op.chatMessage && op.chatExpiresAt && now > op.chatExpiresAt) {
+                    op.chatMessage = null;
+                    op.chatExpiresAt = null;
+                }
+            }
+
+            drawPlayer(player, true, now);
+
+            for (let id in otherPlayers) {
+                drawPlayer(otherPlayers[id], false, now);
+            }
+
+            ctx.fillStyle = 'rgba(255,255,255,0.9)';
+            ctx.font = '16px Arial';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            ctx.fillText(`Namn: ${player.name}`, 10, 10);
+            ctx.fillText(`Andra spelare: ${Object.keys(otherPlayers).length}`, 10, 30);
+
+            requestAnimationFrame(gameLoop);
+        }
+    </script>
+</body>
+</html>
