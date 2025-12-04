@@ -836,14 +836,13 @@
             const spriteId = f.itemId;
             const img = spriteImages[spriteId];
 
-            if (img && img.complete) {
+            if (img && img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
                 const w = img.width;
                 const h = img.height;
                 const drawX = pos.x - w / 2;
                 const drawY = pos.y - h + ISO_TILE_HEIGHT / 2;
                 ctx.drawImage(img, drawX, drawY);
             } else {
-                // fallback: isometrisk kloss
                 const hw = ISO_TILE_WIDTH / 2;
                 const hh = ISO_TILE_HEIGHT / 2;
                 ctx.fillStyle = '#777';
@@ -1336,10 +1335,10 @@
 
             ctx.save();
 
-            // Sprite eller fallback
             const spriteId = p.spriteId || DEFAULT_PLAYER_SPRITE_ID;
             const img = spriteImages[spriteId];
-            if (img && img.complete) {
+
+            if (img && img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
                 const w = img.width;
                 const h = img.height;
                 const drawX = px - w / 2;
@@ -1697,7 +1696,6 @@
                 if (!targetName) return;
                 socket.emit('c4_invite', { targetName });
             } else if (tile === 5) {
-                // Tärningsruta: rulla tärning
                 socket.emit('diceRoll', { row, col });
             }
         });
@@ -1733,21 +1731,34 @@
             updateC4Status();
         }
 
+        function buildC4BaseStatus() {
+            if (!currentC4Game) return '';
+            const game = currentC4Game;
+            const youAreP1 = game.p1 && game.p1.socketId === socket.id;
+            const myWins = youAreP1 ? (game.winsP1 || 0) : (game.winsP2 || 0);
+            const oppWins = youAreP1 ? (game.winsP2 || 0) : (game.winsP1 || 0);
+            const round = game.round || 1;
+            const bestOf = game.bestOf || 3;
+
+            return `Bäst av ${bestOf}. Ställning: du ${myWins} – ${oppWins} motståndaren. Runda ${round}.`;
+        }
+
         function updateC4Status(message) {
             if (!currentC4Game) {
                 c4StatusEl.textContent = '';
                 return;
             }
+            const base = buildC4BaseStatus();
             if (message) {
-                c4StatusEl.textContent = message;
+                c4StatusEl.textContent = message + ' ' + base;
                 return;
             }
             const yourId = socket.id;
-            if (currentC4Game.currentTurn === yourId) {
-                c4StatusEl.textContent = 'Din tur';
-            } else {
-                c4StatusEl.textContent = 'Motståndarens tur';
-            }
+            const turnText =
+                currentC4Game.currentTurn === yourId
+                    ? ' Din tur.'
+                    : ' Motståndarens tur.';
+            c4StatusEl.textContent = base + turnText;
         }
 
         function doC4Move(column) {
@@ -1760,6 +1771,9 @@
         }
 
         c4CloseBtn.addEventListener('click', () => {
+            if (currentC4Game) {
+                socket.emit('c4_quit', { gameId: currentC4Game.gameId });
+            }
             closeC4Modal();
         });
 
@@ -1787,33 +1801,74 @@
             if (!currentC4Game || data.gameId !== currentC4Game.gameId) return;
             currentC4Game.board = data.board;
             currentC4Game.currentTurn = data.currentTurn;
+            if (typeof data.round === 'number') currentC4Game.round = data.round;
+            if (typeof data.winsP1 === 'number') currentC4Game.winsP1 = data.winsP1;
+            if (typeof data.winsP2 === 'number') currentC4Game.winsP2 = data.winsP2;
+            if (typeof data.bestOf === 'number') currentC4Game.bestOf = data.bestOf;
             renderC4Board();
         });
 
         socket.on('c4_end', (data) => {
             if (!currentC4Game || data.gameId !== currentC4Game.gameId) return;
+
+            if (typeof data.round === 'number') currentC4Game.round = data.round;
+            if (typeof data.winsP1 === 'number') currentC4Game.winsP1 = data.winsP1;
+            if (typeof data.winsP2 === 'number') currentC4Game.winsP2 = data.winsP2;
+            if (typeof data.bestOf === 'number') currentC4Game.bestOf = data.bestOf;
+
+            const game = currentC4Game;
+            const youAreP1 = game.p1 && game.p1.socketId === socket.id;
+            const myWins = youAreP1 ? (game.winsP1 || 0) : (game.winsP2 || 0);
+            const oppWins = youAreP1 ? (game.winsP2 || 0) : (game.winsP1 || 0);
+
             let msg = '';
-            if (data.reason === '4inrow') {
+
+            if (data.reason === 'round_win') {
                 if (data.winnerSocketId === socket.id) {
-                    msg = 'Du vann 4 i rad!';
+                    msg = `Du vann runda ${data.round}! (du ${myWins} – ${oppWins})`;
                 } else {
-                    msg = 'Du förlorade 4 i rad.';
+                    msg = `Du förlorade runda ${data.round}. (du ${myWins} – ${oppWins})`;
                 }
-            } else if (data.reason === 'draw') {
-                msg = '4 i rad slutade oavgjort.';
+                updateC4Status(msg);
+                return; // match fortsätter – ny c4_start kommer
+            }
+
+            if (data.reason === 'round_draw') {
+                msg = `Runda ${data.round} slutade oavgjort. (du ${myWins} – ${oppWins})`;
+                updateC4Status(msg);
+                return;
+            }
+
+            if (data.reason === 'match_win') {
+                if (data.winnerSocketId === socket.id) {
+                    msg = `Du vann matchen! Slutställning: du ${myWins} – ${oppWins}.`;
+                } else {
+                    msg = `Du förlorade matchen. Slutställning: du ${myWins} – ${oppWins}.`;
+                }
+            } else if (data.reason === 'match_draw') {
+                msg = `Matchen slutade oavgjort. Slutställning: du ${myWins} – ${oppWins}.`;
             } else if (data.reason === 'disconnect') {
                 if (data.winnerSocketId === socket.id) {
                     msg = 'Du vann – motståndaren lämnade.';
                 } else {
                     msg = 'Matchen avslutades (disconnect).';
                 }
+            } else if (data.reason === 'quit') {
+                if (data.winnerSocketId === socket.id) {
+                    msg = 'Du vann – motståndaren stängde spelet.';
+                } else if (data.winnerSocketId === null) {
+                    msg = 'Matchen avslutades.';
+                } else {
+                    msg = 'Du stängde spelet.';
+                }
             } else {
                 msg = 'Matchen avslutades.';
             }
+
             updateC4Status(msg);
             setTimeout(() => {
                 closeC4Modal();
-            }, 2500);
+            }, 3000);
         });
 
         // TÄRNING – klient

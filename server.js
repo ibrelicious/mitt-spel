@@ -354,6 +354,27 @@ function isC4BoardFull(board) {
   return true;
 }
 
+function makeC4StartPayload(game) {
+  return {
+    gameId: game.id,
+    roomId: game.roomId,
+    board: game.board,
+    currentTurn: game.currentTurn,
+    p1: {
+      socketId: game.p1,
+      name: players[game.p1] ? players[game.p1].name : 'Spelare 1'
+    },
+    p2: {
+      socketId: game.p2,
+      name: players[game.p2] ? players[game.p2].name : 'Spelare 2'
+    },
+    round: game.round,
+    winsP1: game.winsP1,
+    winsP2: game.winsP2,
+    bestOf: game.bestOf
+  };
+}
+
 // ---------- INIT ----------
 loadUsers();
 loadRooms();
@@ -694,17 +715,15 @@ io.on('connection', (socket) => {
         user.coins = 1000000;
         saveUsers();
 
-        // uppdatera coins i klienten
         io.to(socket.id).emit('coinsUpdated', { coins: user.coins });
 
-        // systemmeddelande i rummet
         io.to(player.roomId).emit('message', {
           senderId: 'SYSTEM',
           senderName: 'System',
           message: `${username} fick 1 000 000 coins!`
         });
       }
-      return; // skicka inte själva kommandot som chatt
+      return;
     }
 
     io.to(player.roomId).emit('message', {
@@ -783,7 +802,6 @@ io.on('connection', (socket) => {
     if (!Number.isInteger(r) || !Number.isInteger(c)) return;
     if (r <= 0 || r >= ROOM_ROWS - 1 || c <= 0 || c >= ROOM_COLS - 1) return;
 
-    // kolla att det är en furniture-item och att användaren äger minst en
     const item = SHOP_ITEMS.find((i) => i.id === itemId && i.type === 'furniture');
     if (!item) return;
 
@@ -797,10 +815,8 @@ io.on('connection', (socket) => {
       room.furniture = [];
     }
 
-    // ta bort eventuell befintlig möbel på samma ruta
     room.furniture = room.furniture.filter((f) => !(f.row === r && f.col === c));
 
-    // Lägg till ny möbel
     room.furniture.push({
       row: r,
       col: c,
@@ -885,7 +901,7 @@ io.on('connection', (socket) => {
     });
   });
 
-  // 4 i rad – acceptera
+  // 4 i rad – acceptera (starta best-of-3 match)
   socket.on('c4_accept', (data) => {
     const fromSocketId = data && data.fromSocketId;
     const playerB = players[socket.id];
@@ -910,24 +926,23 @@ io.on('connection', (socket) => {
     const gameId = 'c4_' + nextC4Id++;
     const board = createEmptyC4Board();
 
-    connect4Games[gameId] = {
+    const game = {
       id: gameId,
       roomId,
       p1: fromSocketId,
       p2: socket.id,
       board,
       currentTurn: fromSocketId,
-      status: 'playing'
+      status: 'playing',
+      round: 1,
+      winsP1: 0,
+      winsP2: 0,
+      bestOf: 3
     };
 
-    const payload = {
-      gameId,
-      roomId,
-      board,
-      currentTurn: fromSocketId,
-      p1: { socketId: fromSocketId, name: playerA.name },
-      p2: { socketId: socket.id, name: playerB.name }
-    };
+    connect4Games[gameId] = game;
+
+    const payload = makeC4StartPayload(game);
 
     io.to(fromSocketId).emit('c4_start', payload);
     io.to(socket.id).emit('c4_start', payload);
@@ -966,34 +981,121 @@ io.on('connection', (socket) => {
       gameId,
       board,
       currentTurn: game.currentTurn,
-      lastMove: { row: placedRow, col, player: playerNum }
+      lastMove: { row: placedRow, col, player: playerNum },
+      round: game.round,
+      winsP1: game.winsP1,
+      winsP2: game.winsP2,
+      bestOf: game.bestOf
     };
 
     io.to(game.p1).emit('c4_update', updatePayload);
     io.to(game.p2).emit('c4_update', updatePayload);
 
-    if (winner) {
-      game.status = 'finished';
-      const winnerSocketId = winner === 1 ? game.p1 : game.p2;
-      const endPayload = {
-        gameId,
-        winner,
-        winnerSocketId,
-        reason: '4inrow'
-      };
-      io.to(game.p1).emit('c4_end', endPayload);
-      io.to(game.p2).emit('c4_end', endPayload);
-    } else if (full) {
-      game.status = 'finished';
-      const endPayload = {
-        gameId,
-        winner: 0,
-        winnerSocketId: null,
-        reason: 'draw'
-      };
-      io.to(game.p1).emit('c4_end', endPayload);
-      io.to(game.p2).emit('c4_end', endPayload);
+    if (winner || full) {
+      // En runda är slut
+      let reason;
+      if (winner) {
+        if (winner === 1) game.winsP1++;
+        else game.winsP2++;
+        reason = 'round_win';
+      } else {
+        reason = 'round_draw';
+      }
+
+      const maxWins = Math.floor(game.bestOf / 2) + 1; // t.ex. 2 vid best-of-3
+      const matchOver =
+        game.winsP1 >= maxWins ||
+        game.winsP2 >= maxWins ||
+        game.round >= game.bestOf;
+
+      if (matchOver) {
+        game.status = 'finished';
+
+        let finalReason;
+        let finalWinner = null;
+        if (game.winsP1 > game.winsP2) {
+          finalReason = 'match_win';
+          finalWinner = 1;
+        } else if (game.winsP2 > game.winsP1) {
+          finalReason = 'match_win';
+          finalWinner = 2;
+        } else {
+          finalReason = 'match_draw';
+        }
+
+        const winnerSocketId =
+          finalWinner === 1 ? game.p1 :
+          finalWinner === 2 ? game.p2 :
+          null;
+
+        const endPayload = {
+          gameId,
+          winner: finalWinner,
+          winnerSocketId,
+          reason: finalReason,
+          round: game.round,
+          winsP1: game.winsP1,
+          winsP2: game.winsP2,
+          bestOf: game.bestOf
+        };
+
+        io.to(game.p1).emit('c4_end', endPayload);
+        io.to(game.p2).emit('c4_end', endPayload);
+      } else {
+        // Matchen fortsätter – skicka runda-resultat, sedan starta ny runda
+        const roundEndPayload = {
+          gameId,
+          winner,
+          winnerSocketId: winner === 1 ? game.p1 : winner === 2 ? game.p2 : null,
+          reason,
+          round: game.round,
+          winsP1: game.winsP1,
+          winsP2: game.winsP2,
+          bestOf: game.bestOf
+        };
+
+        io.to(game.p1).emit('c4_end', roundEndPayload);
+        io.to(game.p2).emit('c4_end', roundEndPayload);
+
+        // Nästa runda
+        game.round += 1;
+        game.board = createEmptyC4Board();
+        // Låt den andre börja nästa runda (växla start)
+        game.currentTurn = (game.round % 2 === 1) ? game.p1 : game.p2;
+        game.status = 'playing';
+
+        const startPayload = makeC4StartPayload(game);
+        io.to(game.p1).emit('c4_start', startPayload);
+        io.to(game.p2).emit('c4_start', startPayload);
+      }
     }
+  });
+
+  // 4 i rad – spelare stänger fönstret (quit)
+  socket.on('c4_quit', (data) => {
+    const gameId = data && data.gameId;
+    const game = connect4Games[gameId];
+    if (!game || game.status !== 'playing') return;
+
+    const quitter = socket.id;
+    if (quitter !== game.p1 && quitter !== game.p2) return;
+
+    game.status = 'finished';
+    const other = quitter === game.p1 ? game.p2 : game.p1;
+
+    const payload = {
+      gameId: game.id,
+      winner: null,
+      winnerSocketId: other,
+      reason: 'quit',
+      round: game.round,
+      winsP1: game.winsP1,
+      winsP2: game.winsP2,
+      bestOf: game.bestOf
+    };
+
+    io.to(game.p1).emit('c4_end', payload);
+    io.to(game.p2).emit('c4_end', payload);
   });
 
   // Tärning – rulla
@@ -1031,7 +1133,7 @@ io.on('connection', (socket) => {
       io.to(player.roomId).emit('playerDisconnected', socket.id);
     }
 
-    // 4 i rad – någon lämnar
+    // 4 i rad – någon lämnar under match
     for (const game of Object.values(connect4Games)) {
       if (
         game.status === 'playing' &&
@@ -1039,12 +1141,17 @@ io.on('connection', (socket) => {
       ) {
         game.status = 'finished';
         const other = game.p1 === socket.id ? game.p2 : game.p1;
-        io.to(other).emit('c4_end', {
+        const payload = {
           gameId: game.id,
           winner: null,
           winnerSocketId: other,
-          reason: 'disconnect'
-        });
+          reason: 'disconnect',
+          round: game.round,
+          winsP1: game.winsP1,
+          winsP2: game.winsP2,
+          bestOf: game.bestOf
+        };
+        io.to(other).emit('c4_end', payload);
       }
     }
 
