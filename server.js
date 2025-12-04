@@ -10,7 +10,11 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-// ---------- KONSTANTER / MAP ----------
+// Statisk frontend + JSON-body
+app.use(express.static(path.join(__dirname)));
+app.use(express.json());
+
+// ---------- KONSTANTER ----------
 const ROOM_WIDTH = 800;
 const ROOM_HEIGHT = 600;
 const DEFAULT_RADIUS = 20;
@@ -19,6 +23,18 @@ const TILE_SIZE = 40;
 const ROOM_COLS = ROOM_WIDTH / TILE_SIZE; // 20
 const ROOM_ROWS = ROOM_HEIGHT / TILE_SIZE; // 15
 
+const USERS_FILE = path.join(__dirname, 'users.json');
+const ROOMS_FILE = path.join(__dirname, 'rooms.json');
+
+const APPEARANCE_DEFAULT = {
+  skin: '#f1c27d',
+  shirt: '#3498db',
+  pants: '#2c3e50'
+};
+
+const DEFAULT_COINS = 100;
+
+// ---------- HJÄLPFUNKTIONER FÖR MAP ----------
 function createBaseMap() {
   const map = [];
   for (let row = 0; row < ROOM_ROWS; row++) {
@@ -61,46 +77,14 @@ function randomColor() {
 }
 
 // ---------- DATA ----------
-
-// Alla spelare i minnet
 const players = {};
+const onlineUsers = {}; // username -> socketId
 
-// Vilken användare är inloggad på vilken socket
-// onlineUsers[username] = socketId
-const onlineUsers = {};
-
-// Rum
-const rooms = {};
+let users = {};
+let rooms = {};
 let nextRoomId = 1;
 
-function getRoomList() {
-  return Object.values(rooms).map(r => ({ id: r.id, name: r.name }));
-}
-
-function createRoom(name, owner) {
-  const id = 'room_' + nextRoomId++;
-  rooms[id] = {
-    id,
-    name,
-    owner: owner || null,
-    map: createBaseMap()
-  };
-  return rooms[id];
-}
-
-// Skapa default-lobby
-rooms['lobby'] = {
-  id: 'lobby',
-  name: 'Lobby',
-  owner: null,
-  map: createBaseMap()
-};
-
-// Enkel “databas” av användare
-// Format: { "username": { passwordHash: "..." } }
-const USERS_FILE = path.join(__dirname, 'users.json');
-let users = {};
-
+// ---------- USERS (konto) ----------
 function loadUsers() {
   try {
     const raw = fs.readFileSync(USERS_FILE, 'utf8');
@@ -111,6 +95,19 @@ function loadUsers() {
   } catch (err) {
     users = {};
   }
+
+  let changed = false;
+  for (const [username, user] of Object.entries(users)) {
+    if (!user.appearance) {
+      user.appearance = { ...APPEARANCE_DEFAULT };
+      changed = true;
+    }
+    if (typeof user.coins !== 'number') {
+      user.coins = DEFAULT_COINS;
+      changed = true;
+    }
+  }
+  if (changed) saveUsers();
 }
 
 function saveUsers() {
@@ -119,13 +116,81 @@ function saveUsers() {
   });
 }
 
+// ---------- ROOMS (sparade rum) ----------
+function saveRooms() {
+  fs.writeFile(ROOMS_FILE, JSON.stringify(rooms, null, 2), (err) => {
+    if (err) console.error('Kunde inte spara rooms.json:', err);
+  });
+}
+
+function loadRooms() {
+  try {
+    const raw = fs.readFileSync(ROOMS_FILE, 'utf8');
+    const data = JSON.parse(raw);
+    if (data && typeof data === 'object') {
+      rooms = data;
+    } else {
+      rooms = {};
+    }
+  } catch (err) {
+    rooms = {};
+  }
+
+  if (!rooms || Object.keys(rooms).length === 0 || !rooms['lobby']) {
+    rooms = {};
+    const lobby = {
+      id: 'lobby',
+      name: 'Lobby',
+      owner: null,
+      map: createBaseMap()
+    };
+    rooms[lobby.id] = lobby;
+    saveRooms();
+  } else {
+    // Se till att alla rum har map
+    for (const id of Object.keys(rooms)) {
+      if (!rooms[id].map) {
+        rooms[id].map = createBaseMap();
+      }
+    }
+  }
+
+  // Sätt nextRoomId baserat på befintliga room_X
+  let max = 0;
+  for (const id of Object.keys(rooms)) {
+    const m = /^room_(\d+)$/.exec(id);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (n > max) max = n;
+    }
+  }
+  nextRoomId = max + 1;
+}
+
+function getRoomList() {
+  return Object.values(rooms).map((r) => ({
+    id: r.id,
+    name: r.name
+  }));
+}
+
+function createRoom(name, owner) {
+  const id = 'room_' + nextRoomId++;
+  rooms[id] = {
+    id,
+    name,
+    owner: owner || null,
+    map: createBaseMap()
+  };
+  saveRooms();
+  return rooms[id];
+}
+
+// ---------- INIT ----------
 loadUsers();
+loadRooms();
 
-// ---------- EXPRESS SETUP ----------
-app.use(express.static(path.join(__dirname)));
-app.use(express.json());
-
-// Root
+// ---------- EXPRESS ROUTER ----------
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
@@ -154,7 +219,9 @@ app.post('/api/register', async (req, res) => {
   try {
     const hash = await bcrypt.hash(password, 10);
     users[trimmedUser] = {
-      passwordHash: hash
+      passwordHash: hash,
+      appearance: { ...APPEARANCE_DEFAULT },
+      coins: DEFAULT_COINS
     };
     saveUsers();
     return res.json({ ok: true, message: 'Konto skapat.' });
@@ -164,7 +231,7 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-// Logga in (single login per konto)
+// Logga in
 app.post('/api/login', async (req, res) => {
   const { username, password, socketId } = req.body || {};
   const trimmedUser = String(username || '').trim();
@@ -184,7 +251,7 @@ app.post('/api/login', async (req, res) => {
       return res.status(401).json({ ok: false, message: 'Fel användarnamn eller lösenord.' });
     }
 
-    // Kicka gammal session om den finns
+    // Kicka gammal session
     const existingSocketId = onlineUsers[trimmedUser];
     if (existingSocketId && existingSocketId !== socketId) {
       const oldSocket = io.sockets.sockets.get(existingSocketId);
@@ -196,14 +263,60 @@ app.post('/api/login', async (req, res) => {
 
     onlineUsers[trimmedUser] = socketId;
 
-    return res.json({ ok: true, username: trimmedUser });
+    const appearance = user.appearance || { ...APPEARANCE_DEFAULT };
+    const coins = typeof user.coins === 'number' ? user.coins : DEFAULT_COINS;
+
+    return res.json({
+      ok: true,
+      username: trimmedUser,
+      appearance,
+      coins
+    });
   } catch (err) {
     console.error('Fel vid login:', err);
     return res.status(500).json({ ok: false, message: 'Internt fel. Försök igen.' });
   }
 });
 
-// ---------- HJÄLPFUNKTION FÖR RUM ----------
+// Uppdatera utseende (settings)
+app.post('/api/updateAppearance', (req, res) => {
+  const { username, socketId, appearance } = req.body || {};
+  const trimmedUser = String(username || '').trim();
+
+  if (!trimmedUser || !users[trimmedUser]) {
+    return res.status(400).json({ ok: false, message: 'Okänt konto.' });
+  }
+  if (!appearance || typeof appearance !== 'object') {
+    return res.status(400).json({ ok: false, message: 'Ogiltigt utseende.' });
+  }
+  if (onlineUsers[trimmedUser] !== socketId) {
+    return res.status(403).json({ ok: false, message: 'Inte inloggad som denna användare.' });
+  }
+
+  const user = users[trimmedUser];
+  user.appearance = {
+    skin: appearance.skin || APPEARANCE_DEFAULT.skin,
+    shirt: appearance.shirt || APPEARANCE_DEFAULT.shirt,
+    pants: appearance.pants || APPEARANCE_DEFAULT.pants
+  };
+  saveUsers();
+
+  const player = players[socketId];
+  if (player) {
+    player.appearance = user.appearance;
+    player.color = user.appearance.shirt;
+    if (player.roomId) {
+      io.to(player.roomId).emit('appearanceUpdated', {
+        socketId,
+        appearance: player.appearance
+      });
+    }
+  }
+
+  return res.json({ ok: true, appearance: user.appearance });
+});
+
+// ---------- RUMSHANTERING ----------
 function joinPlayerToRoom(socket, roomId) {
   const player = players[socket.id];
   const room = rooms[roomId];
@@ -222,7 +335,6 @@ function joinPlayerToRoom(socket, roomId) {
   player.x = spawn.x;
   player.y = spawn.y;
 
-  // Bygg lista över spelare i detta rum
   const roomPlayers = {};
   for (const [sid, p] of Object.entries(players)) {
     if (p.roomId === roomId) {
@@ -230,14 +342,11 @@ function joinPlayerToRoom(socket, roomId) {
     }
   }
 
-  // Skicka till denna spelare
   socket.emit('currentPlayers', roomPlayers);
   socket.emit('roomJoined', { roomId, roomName: room.name });
 
-  // Tala om för andra i rummet
   socket.to(roomId).emit('newPlayer', player);
 
-  // Tala om för gamla rummet att spelaren försvann
   if (oldRoomId && oldRoomId !== roomId) {
     io.to(oldRoomId).emit('playerDisconnected', socket.id);
   }
@@ -247,7 +356,6 @@ function joinPlayerToRoom(socket, roomId) {
 io.on('connection', (socket) => {
   console.log('En spelare anslöt! ID:', socket.id);
 
-  // Skapa spelare
   players[socket.id] = {
     x: 0,
     y: 0,
@@ -255,46 +363,49 @@ io.on('connection', (socket) => {
     radius: DEFAULT_RADIUS,
     name: 'Ny Spelare',
     socketId: socket.id,
-    roomId: null
+    roomId: null,
+    appearance: { ...APPEARANCE_DEFAULT }
   };
 
-  // Skicka rumslista + lägg spelaren i lobbyn
   socket.emit('roomList', getRoomList());
   joinPlayerToRoom(socket, 'lobby');
 
-  // Skapa nytt rum
   socket.on('createRoom', (roomNameRaw) => {
     const player = players[socket.id];
     if (!player) return;
     const roomName = String(roomNameRaw || '').trim() || `${player.name || 'Rum'}`;
     const room = createRoom(roomName, player.name || null);
 
-    // uppdatera rumslista för alla
     io.emit('roomList', getRoomList());
-
-    // flytta skaparen till nya rummet
     joinPlayerToRoom(socket, room.id);
   });
 
-  // Byt rum
   socket.on('joinRoom', (roomId) => {
     if (!rooms[roomId]) return;
     joinPlayerToRoom(socket, roomId);
   });
 
-  // Uppdatera namn efter login
   socket.on('playerReady', (data) => {
-    if (!players[socket.id]) return;
-    if (data && data.name) {
-      players[socket.id].name = String(data.name);
-    }
     const player = players[socket.id];
+    if (!player) return;
+
+    if (data && data.name) {
+      player.name = String(data.name);
+    }
+    if (data && data.appearance) {
+      player.appearance = {
+        skin: data.appearance.skin || APPEARANCE_DEFAULT.skin,
+        shirt: data.appearance.shirt || APPEARANCE_DEFAULT.shirt,
+        pants: data.appearance.pants || APPEARANCE_DEFAULT.pants
+      };
+      player.color = player.appearance.shirt;
+    }
+
     if (player.roomId) {
       io.to(player.roomId).emit('playerReady', player);
     }
   });
 
-  // Rörelse
   socket.on('playerMovement', (movementData) => {
     const player = players[socket.id];
     if (!player || !player.roomId) return;
@@ -312,7 +423,6 @@ io.on('connection', (socket) => {
     io.to(player.roomId).emit('playerMoved', player);
   });
 
-  // Chatt
   socket.on('chatMessage', (message) => {
     const player = players[socket.id];
     if (!player || !player.roomId) return;
@@ -325,7 +435,6 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Disconnect
   socket.on('disconnect', () => {
     console.log('En spelare lämnade. ID:', socket.id);
 
@@ -334,7 +443,6 @@ io.on('connection', (socket) => {
       io.to(player.roomId).emit('playerDisconnected', socket.id);
     }
 
-    // Ta bort ev. onlineUser-koppling
     for (const [username, sid] of Object.entries(onlineUsers)) {
       if (sid === socket.id) {
         delete onlineUsers[username];
@@ -346,7 +454,7 @@ io.on('connection', (socket) => {
   });
 });
 
-// ---------- STARTA ----------
+// ---------- START ----------
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Servern är igång på port ${PORT}`);

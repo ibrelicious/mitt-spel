@@ -79,6 +79,11 @@
             background-color: #555;
         }
 
+        #coinsLabel {
+            font-size: 13px;
+            color: #ffd966;
+        }
+
         #contentArea {
             display: flex;
             gap: 10px;
@@ -231,6 +236,55 @@
             font-size: 12px;
             margin-top: 6px;
         }
+
+        /* SETTINGS MODAL */
+        #settingsModal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.85);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 110;
+        }
+        #settingsContainer {
+            background-color: #1a1a1a;
+            padding: 20px 24px;
+            border-radius: 8px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.5);
+            color: #fff;
+            min-width: 320px;
+        }
+        #settingsContainer h3 {
+            margin-top: 0;
+            margin-bottom: 10px;
+            color: #4da3ff;
+        }
+        .settings-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+        .settings-row label {
+            font-size: 14px;
+        }
+        .settings-row input[type="color"] {
+            width: 60px;
+            height: 28px;
+            border: 1px solid #444;
+            background: #000;
+            padding: 0;
+        }
+        #settingsButtons {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            margin-top: 10px;
+        }
     </style>
 </head>
 <body>
@@ -261,6 +315,29 @@
         </div>
     </div>
 
+    <!-- SETTINGS -->
+    <div id="settingsModal">
+        <div id="settingsContainer">
+            <h3>Inställningar – Utseende</h3>
+            <div class="settings-row">
+                <label for="skinColorInput">Hudfärg</label>
+                <input type="color" id="skinColorInput" />
+            </div>
+            <div class="settings-row">
+                <label for="shirtColorInput">Tröja</label>
+                <input type="color" id="shirtColorInput" />
+            </div>
+            <div class="settings-row">
+                <label for="pantsColorInput">Byxor</label>
+                <input type="color" id="pantsColorInput" />
+            </div>
+            <div id="settingsButtons">
+                <button id="settingsCancelBtn" class="top-btn secondary">Avbryt</button>
+                <button id="settingsSaveBtn" class="top-btn">Spara</button>
+            </div>
+        </div>
+    </div>
+
     <div id="mainWrapper">
         <div id="topBar">
             <div id="topBar-left">
@@ -268,6 +345,8 @@
                 <select id="roomSelect"></select>
             </div>
             <div id="topBar-right">
+                <span id="coinsLabel">Coins: <span id="coinsValue">0</span></span>
+                <button id="settingsBtn" class="top-btn secondary">Inställningar</button>
                 <button id="createRoomBtn" class="top-btn">Skapa rum</button>
                 <button id="logoutBtn" class="top-btn secondary">Logga ut</button>
             </div>
@@ -311,9 +390,27 @@
         const roomSelect = document.getElementById('roomSelect');
         const createRoomBtn = document.getElementById('createRoomBtn');
         const logoutBtn = document.getElementById('logoutBtn');
+
+        const coinsValueEl = document.getElementById('coinsValue');
+
+        const settingsModal = document.getElementById('settingsModal');
+        const settingsBtn = document.getElementById('settingsBtn');
+        const settingsSaveBtn = document.getElementById('settingsSaveBtn');
+        const settingsCancelBtn = document.getElementById('settingsCancelBtn');
+        const skinColorInput = document.getElementById('skinColorInput');
+        const shirtColorInput = document.getElementById('shirtColorInput');
+        const pantsColorInput = document.getElementById('pantsColorInput');
+
         const playerListEl = document.getElementById('playerList');
 
         let currentRoomId = 'lobby';
+        let currentUsername = null;
+        let currentCoins = 0;
+        let currentAppearance = {
+            skin: '#f1c27d',
+            shirt: '#3498db',
+            pants: '#2c3e50'
+        };
 
         let player = {
             x: 0,
@@ -322,14 +419,14 @@
             color: 'blue',
             name: 'Okänd',
             chatMessage: null,
-            chatExpiresAt: null
+            chatExpiresAt: null,
+            appearance: { ...currentAppearance }
         };
 
-        const SPEED = 5;
+        const SPEED = 3; // långsammare rörelse
         let keys = {};
         let gameStarted = false;
 
-        // TILE-MAP (samma logik som på servern)
         const TILE_SIZE = 40;
         const ROOM_COLS = canvas.width / TILE_SIZE;
         const ROOM_ROWS = canvas.height / TILE_SIZE;
@@ -367,9 +464,9 @@
                     const y = row * TILE_SIZE;
 
                     if (tile === 1) {
-                        ctx.fillStyle = '#151824'; // vägg
+                        ctx.fillStyle = '#151824';
                     } else {
-                        ctx.fillStyle = '#101522'; // golv
+                        ctx.fillStyle = '#101522';
                     }
                     ctx.fillRect(x, y, TILE_SIZE, TILE_SIZE);
 
@@ -412,6 +509,27 @@
             }
         }
 
+        function applyAppearanceToPlayer(appearance) {
+            currentAppearance = {
+                skin: appearance.skin || '#f1c27d',
+                shirt: appearance.shirt || '#3498db',
+                pants: appearance.pants || '#2c3e50'
+            };
+            player.appearance = { ...currentAppearance };
+            player.color = currentAppearance.shirt;
+        }
+
+        function openSettingsModal() {
+            skinColorInput.value = currentAppearance.skin;
+            shirtColorInput.value = currentAppearance.shirt;
+            pantsColorInput.value = currentAppearance.pants;
+            settingsModal.style.display = 'flex';
+        }
+
+        function closeSettingsModal() {
+            settingsModal.style.display = 'none';
+        }
+
         async function handleLogin() {
             const username = usernameInput.value.trim();
             const password = passwordInput.value;
@@ -432,10 +550,16 @@
 
             try {
                 const data = await apiRequest('/api/login', { username, password, socketId: socket.id });
+                currentUsername = data.username;
+                currentCoins = data.coins || 0;
+                coinsValueEl.textContent = String(currentCoins);
+
+                applyAppearanceToPlayer(data.appearance || {});
                 player.name = data.username;
+
                 nameModal.style.display = 'none';
                 gameStarted = true;
-                socket.emit('playerReady', { name: player.name });
+                socket.emit('playerReady', { name: player.name, appearance: currentAppearance });
                 gameLoop();
             } catch (err) {
                 authError.textContent = err.message;
@@ -463,10 +587,17 @@
             try {
                 await apiRequest('/api/register', { username, password });
                 const data = await apiRequest('/api/login', { username, password, socketId: socket.id });
+
+                currentUsername = data.username;
+                currentCoins = data.coins || 0;
+                coinsValueEl.textContent = String(currentCoins);
+
+                applyAppearanceToPlayer(data.appearance || {});
                 player.name = data.username;
+
                 nameModal.style.display = 'none';
                 gameStarted = true;
-                socket.emit('playerReady', { name: player.name });
+                socket.emit('playerReady', { name: player.name, appearance: currentAppearance });
                 gameLoop();
             } catch (err) {
                 authError.textContent = err.message;
@@ -512,13 +643,44 @@
             window.location.reload();
         });
 
-        // Om servern kikar ut oss (inloggad någon annanstans)
+        // Inställningar
+        settingsBtn.addEventListener('click', () => {
+            if (!currentUsername) return;
+            openSettingsModal();
+        });
+
+        settingsCancelBtn.addEventListener('click', () => {
+            closeSettingsModal();
+        });
+
+        settingsSaveBtn.addEventListener('click', async () => {
+            if (!currentUsername || !socket.id) return;
+
+            const newAppearance = {
+                skin: skinColorInput.value || currentAppearance.skin,
+                shirt: shirtColorInput.value || currentAppearance.shirt,
+                pants: pantsColorInput.value || currentAppearance.pants
+            };
+
+            try {
+                await apiRequest('/api/updateAppearance', {
+                    username: currentUsername,
+                    socketId: socket.id,
+                    appearance: newAppearance
+                });
+                applyAppearanceToPlayer(newAppearance);
+                socket.emit('playerReady', { name: player.name, appearance: currentAppearance });
+                closeSettingsModal();
+            } catch (err) {
+                alert(err.message || 'Kunde inte spara utseende.');
+            }
+        });
+
         socket.on('forceLogout', (reason) => {
             alert(reason || 'Du loggades ut.');
             window.location.reload();
         });
 
-        // Tangentbord
         document.addEventListener('keydown', (e) => {
             if (!gameStarted) return;
             if (document.activeElement !== chatInput) {
@@ -551,25 +713,48 @@
 
         function drawPlayer(p, isSelf = false, nowTime = Date.now()) {
             const r = p.radius || 20;
+            const appearance = p.appearance || {};
+            const skin = appearance.skin || '#f1c27d';
+            const shirt = appearance.shirt || p.color || '#3498db';
+            const pants = appearance.pants || '#2c3e50';
 
             ctx.save();
 
-            ctx.fillStyle = p.color || (isSelf ? '#4da3ff' : '#6dd5ed');
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-            ctx.fill();
+            // Kropp (rektangel)
+            const bodyWidth = r * 1.4;
+            const bodyHeight = r * 1.6;
+            const bodyX = p.x - bodyWidth / 2;
+            const bodyY = p.y - bodyHeight / 2 + 4;
 
+            // Byxor (nedre del)
+            ctx.fillStyle = pants;
+            ctx.fillRect(bodyX, bodyY + bodyHeight / 2, bodyWidth, bodyHeight / 2);
+
+            // Tröja (övre del)
+            ctx.fillStyle = shirt;
+            ctx.fillRect(bodyX, bodyY, bodyWidth, bodyHeight / 2);
+
+            // Huvud (cirkel)
+            const headRadius = r * 0.7;
+            const headX = p.x;
+            const headY = bodyY - headRadius + 6;
+            ctx.beginPath();
+            ctx.arc(headX, headY, headRadius, 0, Math.PI * 2);
+            ctx.fillStyle = skin;
+            ctx.fill();
             ctx.strokeStyle = 'black';
-            ctx.lineWidth = 3;
+            ctx.lineWidth = 2;
             ctx.stroke();
 
+            // Namn
             const nameToDisplay = p.name || (isSelf ? 'DU' : 'KOMPIS'); 
             ctx.fillStyle = isSelf ? 'white' : '#f1f1f1';
             ctx.font = 'bold 14px Arial';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText(nameToDisplay, p.x, p.y + 1); 
+            ctx.fillText(nameToDisplay, p.x, p.y + bodyHeight / 2 + 10); 
 
+            // Chattbubbla
             if (p.chatMessage && (!p.chatExpiresAt || nowTime <= p.chatExpiresAt)) {
                 const text = p.chatMessage;
                 ctx.font = '13px Arial';
@@ -578,7 +763,7 @@
                 const boxWidth = Math.min(textWidth + paddingX * 2, 260);
                 const boxHeight = 24;
                 let boxX = p.x - boxWidth / 2;
-                let boxY = p.y - r - 40;
+                let boxY = headY - headRadius - boxHeight - 10;
 
                 ctx.beginPath();
                 if (ctx.roundRect) {
@@ -599,7 +784,7 @@
 
                 ctx.beginPath();
                 const tipX = p.x;
-                const tipY = p.y - r + 2;
+                const tipY = headY - headRadius + 2;
                 ctx.moveTo(tipX - 8, boxY + boxHeight);
                 ctx.lineTo(tipX + 3, boxY + boxHeight);
                 ctx.lineTo(tipX - 3, tipY);
@@ -658,6 +843,7 @@
                     player.color = p.color;
                     player.radius = p.radius;
                     player.name = p.name || player.name;
+                    player.appearance = p.appearance || player.appearance;
                 } else {
                     otherPlayers[id] = {
                         x: p.x,
@@ -667,7 +853,8 @@
                         name: p.name || 'Kommer snart',
                         socketId: p.socketId,
                         chatMessage: null,
-                        chatExpiresAt: null
+                        chatExpiresAt: null,
+                        appearance: p.appearance || null
                     };
                 }
             }
@@ -677,6 +864,7 @@
         socket.on('playerReady', (playerInfo) => {
             if (otherPlayers[playerInfo.socketId]) {
                 otherPlayers[playerInfo.socketId].name = playerInfo.name;
+                otherPlayers[playerInfo.socketId].appearance = playerInfo.appearance || otherPlayers[playerInfo.socketId].appearance;
             }
             updatePlayerList();
         });
@@ -687,7 +875,8 @@
                 ...playerInfo,
                 name: playerInfo.name || 'Ny Spelare',
                 chatMessage: null,
-                chatExpiresAt: null
+                chatExpiresAt: null,
+                appearance: playerInfo.appearance || null
             };
             updatePlayerList();
         });
@@ -699,7 +888,8 @@
                     ...playerInfo,
                     name: playerInfo.name || 'Ny Spelare',
                     chatMessage: null,
-                    chatExpiresAt: null
+                    chatExpiresAt: null,
+                    appearance: playerInfo.appearance || null
                 };
             } else {
                 const op = otherPlayers[playerInfo.socketId];
@@ -708,12 +898,22 @@
                 op.color = playerInfo.color;
                 op.radius = playerInfo.radius;
                 op.name = playerInfo.name || op.name;
+                op.appearance = playerInfo.appearance || op.appearance;
             }
         });
 
         socket.on('playerDisconnected', (socketId) => {
             delete otherPlayers[socketId];
             updatePlayerList();
+        });
+
+        socket.on('appearanceUpdated', ({ socketId, appearance }) => {
+            if (socketId === socket.id) {
+                applyAppearanceToPlayer(appearance);
+            } else if (otherPlayers[socketId]) {
+                otherPlayers[socketId].appearance = appearance;
+                otherPlayers[socketId].color = appearance.shirt || otherPlayers[socketId].color;
+            }
         });
 
         socket.on('roomList', (rooms) => {
