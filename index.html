@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
+    <meta charset="UTF-8" />
     <title>Mitt Spel - Rum</title>
     <style>
         body {
@@ -73,23 +74,26 @@
             box-shadow: 0 5px 15px rgba(0, 0, 0, 0.5);
             text-align: center;
             color: #fff;
+            min-width: 320px;
         }
         #nameInputContainer h2 {
             margin-top: 0;
             color: #4da3ff;
         }
-        #playerNameInput {
+        .auth-input {
             padding: 10px;
-            margin-bottom: 15px;
+            margin-bottom: 10px;
             border: 1px solid #444;
             background-color: #000;
             color: #fff;
             width: 250px;
             box-sizing: border-box;
             font-size: 16px;
+            border-radius: 4px;
         }
-        #submitNameBtn {
-            padding: 10px 20px;
+        .auth-button {
+            padding: 10px 18px;
+            margin: 4px;
             background-color: #4da3ff;
             color: white;
             border: none;
@@ -98,8 +102,25 @@
             font-weight: bold;
             transition: background-color 0.2s;
         }
-        #submitNameBtn:hover {
+        .auth-button.secondary {
+            background-color: #333;
+        }
+        .auth-button:hover {
             background-color: #387bd8;
+        }
+        .auth-button.secondary:hover {
+            background-color: #555;
+        }
+        #authError {
+            color: #ff7777;
+            min-height: 20px;
+            margin-top: 6px;
+            font-size: 13px;
+        }
+        #authInfo {
+            color: #aaaaaa;
+            font-size: 12px;
+            margin-top: 6px;
         }
     </style>
 </head>
@@ -107,9 +128,27 @@
     
     <div id="nameModal">
         <div id="nameInputContainer">
-            <h2>Välj ditt spelarnamn</h2>
-            <input type="text" id="playerNameInput" maxlength="12" placeholder="Skriv namn här...">
-            <button id="submitNameBtn">Gå in i rummet</button>
+            <h2>Logga in eller skapa konto</h2>
+            <input
+                type="text"
+                id="usernameInput"
+                class="auth-input"
+                maxlength="20"
+                placeholder="Användarnamn"
+            />
+            <input
+                type="password"
+                id="passwordInput"
+                class="auth-input"
+                maxlength="50"
+                placeholder="Lösenord"
+            />
+            <div>
+                <button id="loginBtn" class="auth-button">Logga in</button>
+                <button id="registerBtn" class="auth-button secondary">Skapa konto</button>
+            </div>
+            <div id="authError"></div>
+            <div id="authInfo">Lösenord sparas säkert (hashat) på servern.</div>
         </div>
     </div>
 
@@ -133,8 +172,11 @@
         const chatMessages = document.getElementById('chatMessages');
         
         const nameModal = document.getElementById('nameModal');
-        const playerNameInput = document.getElementById('playerNameInput');
-        const submitNameBtn = document.getElementById('submitNameBtn');
+        const usernameInput = document.getElementById('usernameInput');
+        const passwordInput = document.getElementById('passwordInput');
+        const loginBtn = document.getElementById('loginBtn');
+        const registerBtn = document.getElementById('registerBtn');
+        const authError = document.getElementById('authError');
 
         let player = {
             x: 0,
@@ -150,25 +192,93 @@
         let keys = {};
         let gameStarted = false;
 
-        playerNameInput.addEventListener('keydown', (e) => {
+        async function apiRequest(path, body) {
+            authError.textContent = '';
+            try {
+                const res = await fetch(path, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || !data.ok) {
+                    throw new Error(data.message || 'Något gick fel.');
+                }
+                return data;
+            } catch (err) {
+                throw err;
+            }
+        }
+
+        async function handleLogin() {
+            const username = usernameInput.value.trim();
+            const password = passwordInput.value;
+
+            if (username.length < 2) {
+                authError.textContent = 'Användarnamnet måste vara minst 2 tecken.';
+                return;
+            }
+            if (password.length < 4) {
+                authError.textContent = 'Lösenordet måste vara minst 4 tecken.';
+                return;
+            }
+
+            try {
+                const data = await apiRequest('/api/login', { username, password });
+                player.name = data.username;
+                nameModal.style.display = 'none';
+                gameStarted = true;
+                socket.emit('playerReady', { name: player.name });
+                gameLoop();
+            } catch (err) {
+                authError.textContent = err.message;
+            }
+        }
+
+        async function handleRegister() {
+            const username = usernameInput.value.trim();
+            const password = passwordInput.value;
+
+            if (username.length < 2) {
+                authError.textContent = 'Användarnamnet måste vara minst 2 tecken.';
+                return;
+            }
+            if (password.length < 4) {
+                authError.textContent = 'Lösenordet måste vara minst 4 tecken.';
+                return;
+            }
+
+            try {
+                await apiRequest('/api/register', { username, password });
+                const data = await apiRequest('/api/login', { username, password });
+                player.name = data.username;
+                nameModal.style.display = 'none';
+                gameStarted = true;
+                socket.emit('playerReady', { name: player.name });
+                gameLoop();
+            } catch (err) {
+                authError.textContent = err.message;
+            }
+        }
+
+        usernameInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
-                submitNameBtn.click();
+                passwordInput.focus();
             }
         });
 
-        submitNameBtn.addEventListener('click', () => {
-            let name = playerNameInput.value.trim();
-            if (name.length < 2) {
-                alert("Namnet måste vara minst 2 tecken långt!");
-                return;
+        passwordInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                handleLogin();
             }
-            player.name = name;
-            nameModal.style.display = 'none';
-            gameStarted = true;
-            
-            socket.emit('playerReady', { name: player.name });
+        });
 
-            gameLoop(); 
+        loginBtn.addEventListener('click', () => {
+            handleLogin();
+        });
+
+        registerBtn.addEventListener('click', () => {
+            handleRegister();
         });
 
         document.addEventListener('keydown', (e) => {
