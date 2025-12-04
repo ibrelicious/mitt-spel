@@ -214,6 +214,11 @@
             const username = usernameInput.value.trim();
             const password = passwordInput.value;
 
+            if (!socket.id) {
+                authError.textContent = 'Ansluter till servern, vänta en sekund och försök igen.';
+                return;
+            }
+
             if (username.length < 2) {
                 authError.textContent = 'Användarnamnet måste vara minst 2 tecken.';
                 return;
@@ -224,7 +229,7 @@
             }
 
             try {
-                const data = await apiRequest('/api/login', { username, password });
+                const data = await apiRequest('/api/login', { username, password, socketId: socket.id });
                 player.name = data.username;
                 nameModal.style.display = 'none';
                 gameStarted = true;
@@ -239,6 +244,11 @@
             const username = usernameInput.value.trim();
             const password = passwordInput.value;
 
+            if (!socket.id) {
+                authError.textContent = 'Ansluter till servern, vänta en sekund och försök igen.';
+                return;
+            }
+
             if (username.length < 2) {
                 authError.textContent = 'Användarnamnet måste vara minst 2 tecken.';
                 return;
@@ -250,7 +260,7 @@
 
             try {
                 await apiRequest('/api/register', { username, password });
-                const data = await apiRequest('/api/login', { username, password });
+                const data = await apiRequest('/api/login', { username, password, socketId: socket.id });
                 player.name = data.username;
                 nameModal.style.display = 'none';
                 gameStarted = true;
@@ -279,6 +289,12 @@
 
         registerBtn.addEventListener('click', () => {
             handleRegister();
+        });
+
+        // Om servern kikar ut oss (inloggad någon annanstans)
+        socket.on('forceLogout', (reason) => {
+            alert(reason || 'Du loggades ut.');
+            window.location.reload();
         });
 
         document.addEventListener('keydown', (e) => {

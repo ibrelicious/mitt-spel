@@ -21,6 +21,10 @@ const DEFAULT_RADIUS = 20;
 // Alla spelare i minnet
 const players = {};
 
+// Vilken användare är inloggad på vilken socket
+// onlineUsers[username] = socketId
+const onlineUsers = {};
+
 // Enkel “databas” av användare
 // Format: { "username": { passwordHash: "..." } }
 const USERS_FILE = path.join(__dirname, 'users.json');
@@ -89,10 +93,14 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-// Logga in
+// Logga in (kopplar username -> socketId, kickar ev. gammal session)
 app.post('/api/login', async (req, res) => {
-  const { username, password } = req.body || {};
+  const { username, password, socketId } = req.body || {};
   const trimmedUser = String(username || '').trim();
+
+  if (!socketId) {
+    return res.status(400).json({ ok: false, message: 'Ingen socket-id. Ladda om sidan och försök igen.' });
+  }
 
   const user = users[trimmedUser];
   if (!user) {
@@ -104,6 +112,19 @@ app.post('/api/login', async (req, res) => {
     if (!match) {
       return res.status(401).json({ ok: false, message: 'Fel användarnamn eller lösenord.' });
     }
+
+    // Kolla om användaren redan är inloggad någon annanstans
+    const existingSocketId = onlineUsers[trimmedUser];
+    if (existingSocketId && existingSocketId !== socketId) {
+      const oldSocket = io.sockets.sockets.get(existingSocketId);
+      if (oldSocket) {
+        oldSocket.emit('forceLogout', 'Du loggades ut eftersom du loggade in på ett annat ställe.');
+        oldSocket.disconnect(true);
+      }
+    }
+
+    // Registrera denna socket som aktiv för användaren
+    onlineUsers[trimmedUser] = socketId;
 
     // Inloggningen lyckades
     return res.json({ ok: true, username: trimmedUser });
@@ -183,6 +204,15 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log('En spelare lämnade. ID:', socket.id);
     delete players[socket.id];
+
+    // Ta bort socketId från onlineUsers om den var kopplad till någon
+    for (const [username, sid] of Object.entries(onlineUsers)) {
+      if (sid === socket.id) {
+        delete onlineUsers[username];
+        break;
+      }
+    }
+
     io.emit('playerDisconnected', socket.id);
   });
 });
