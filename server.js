@@ -34,6 +34,40 @@ const APPEARANCE_DEFAULT = {
 
 const DEFAULT_COINS = 100;
 
+// Enkel shop med färdiga outfits
+const SHOP_ITEMS = [
+  {
+    id: 'outfit_blue',
+    name: 'Blå outfit',
+    price: 20,
+    appearance: {
+      skin: '#f1c27d',
+      shirt: '#3498db',
+      pants: '#2c3e50'
+    }
+  },
+  {
+    id: 'outfit_red',
+    name: 'Röd outfit',
+    price: 25,
+    appearance: {
+      skin: '#f1c27d',
+      shirt: '#e74c3c',
+      pants: '#2c3e50'
+    }
+  },
+  {
+    id: 'outfit_green',
+    name: 'Grön outfit',
+    price: 25,
+    appearance: {
+      skin: '#f1c27d',
+      shirt: '#27ae60',
+      pants: '#145a32'
+    }
+  }
+];
+
 // ---------- HJÄLPFUNKTIONER FÖR MAP ----------
 function createBaseMap() {
   const map = [];
@@ -52,18 +86,22 @@ function createBaseMap() {
   return map;
 }
 
+function isWalkableTile(tile) {
+  return tile === 0 || tile === 2; // golv eller matta
+}
+
 function canWalk(map, x, y) {
   const col = Math.floor(x / TILE_SIZE);
   const row = Math.floor(y / TILE_SIZE);
   if (row < 0 || row >= ROOM_ROWS || col < 0 || col >= ROOM_COLS) return false;
-  return map[row][col] === 0;
+  return isWalkableTile(map[row][col]);
 }
 
 function getRandomSpawn(map) {
   while (true) {
     const row = Math.floor(Math.random() * ROOM_ROWS);
     const col = Math.floor(Math.random() * ROOM_COLS);
-    if (map[row][col] === 0) {
+    if (isWalkableTile(map[row][col])) {
       return {
         x: col * TILE_SIZE + TILE_SIZE / 2,
         y: row * TILE_SIZE + TILE_SIZE / 2
@@ -174,12 +212,12 @@ function getRoomList() {
   }));
 }
 
-function createRoom(name, owner) {
+function createRoom(name, ownerUsername) {
   const id = 'room_' + nextRoomId++;
   rooms[id] = {
     id,
     name,
-    owner: owner || null,
+    owner: ownerUsername || null, // konto-namn
     map: createBaseMap()
   };
   saveRooms();
@@ -316,6 +354,65 @@ app.post('/api/updateAppearance', (req, res) => {
   return res.json({ ok: true, appearance: user.appearance });
 });
 
+// Hämta shop-items
+app.get('/api/shop', (req, res) => {
+  res.json({
+    ok: true,
+    items: SHOP_ITEMS
+  });
+});
+
+// Köp item i shopen
+app.post('/api/buyItem', (req, res) => {
+  const { username, socketId, itemId } = req.body || {};
+  const trimmedUser = String(username || '').trim();
+
+  if (!trimmedUser || !users[trimmedUser]) {
+    return res.status(400).json({ ok: false, message: 'Okänt konto.' });
+  }
+  if (onlineUsers[trimmedUser] !== socketId) {
+    return res.status(403).json({ ok: false, message: 'Inte inloggad som denna användare.' });
+  }
+
+  const item = SHOP_ITEMS.find((i) => i.id === itemId);
+  if (!item) {
+    return res.status(400).json({ ok: false, message: 'Okänt shop-item.' });
+  }
+
+  const user = users[trimmedUser];
+  if (typeof user.coins !== 'number') user.coins = DEFAULT_COINS;
+
+  if (user.coins < item.price) {
+    return res.status(400).json({ ok: false, message: 'För lite coins.' });
+  }
+
+  user.coins -= item.price;
+  user.appearance = {
+    skin: item.appearance.skin || APPEARANCE_DEFAULT.skin,
+    shirt: item.appearance.shirt || APPEARANCE_DEFAULT.shirt,
+    pants: item.appearance.pants || APPEARANCE_DEFAULT.pants
+  };
+  saveUsers();
+
+  const player = players[socketId];
+  if (player) {
+    player.appearance = user.appearance;
+    player.color = user.appearance.shirt;
+    if (player.roomId) {
+      io.to(player.roomId).emit('appearanceUpdated', {
+        socketId,
+        appearance: player.appearance
+      });
+    }
+  }
+
+  return res.json({
+    ok: true,
+    coins: user.coins,
+    appearance: user.appearance
+  });
+});
+
 // ---------- RUMSHANTERING ----------
 function joinPlayerToRoom(socket, roomId) {
   const player = players[socket.id];
@@ -335,6 +432,9 @@ function joinPlayerToRoom(socket, roomId) {
   player.x = spawn.x;
   player.y = spawn.y;
 
+  // Skicka aktuell karta till den här spelaren
+  socket.emit('roomMapUpdated', { roomId, map: room.map });
+
   const roomPlayers = {};
   for (const [sid, p] of Object.entries(players)) {
     if (p.roomId === roomId) {
@@ -343,7 +443,7 @@ function joinPlayerToRoom(socket, roomId) {
   }
 
   socket.emit('currentPlayers', roomPlayers);
-  socket.emit('roomJoined', { roomId, roomName: room.name });
+  socket.emit('roomJoined', { roomId, roomName: room.name, owner: room.owner });
 
   socket.to(roomId).emit('newPlayer', player);
 
@@ -364,7 +464,8 @@ io.on('connection', (socket) => {
     name: 'Ny Spelare',
     socketId: socket.id,
     roomId: null,
-    appearance: { ...APPEARANCE_DEFAULT }
+    appearance: { ...APPEARANCE_DEFAULT },
+    username: null
   };
 
   socket.emit('roomList', getRoomList());
@@ -374,7 +475,8 @@ io.on('connection', (socket) => {
     const player = players[socket.id];
     if (!player) return;
     const roomName = String(roomNameRaw || '').trim() || `${player.name || 'Rum'}`;
-    const room = createRoom(roomName, player.name || null);
+    const ownerUsername = player.username || null;
+    const room = createRoom(roomName, ownerUsername);
 
     io.emit('roomList', getRoomList());
     joinPlayerToRoom(socket, room.id);
@@ -399,6 +501,9 @@ io.on('connection', (socket) => {
         pants: data.appearance.pants || APPEARANCE_DEFAULT.pants
       };
       player.color = player.appearance.shirt;
+    }
+    if (data && data.username) {
+      player.username = String(data.username);
     }
 
     if (player.roomId) {
@@ -433,6 +538,40 @@ io.on('connection', (socket) => {
       senderName: playerName,
       message
     });
+  });
+
+  // Rums-editor: ändra en tile
+  socket.on('editTile', (data) => {
+    const player = players[socket.id];
+    if (!player || !player.roomId) return;
+    const room = rooms[player.roomId];
+    if (!room) return;
+
+    const { roomId, row, col, tile } = data || {};
+    if (!roomId || roomId !== room.id) return;
+
+    // Endast rumsägaren får ändra
+    if (room.owner) {
+      const playerId = player.username || player.name;
+      if (playerId !== room.owner) {
+        return;
+      }
+    }
+
+    const r = Number(row);
+    const c = Number(col);
+    const t = Number(tile);
+
+    if (!Number.isInteger(r) || !Number.isInteger(c)) return;
+    if (r <= 0 || r >= ROOM_ROWS - 1 || c <= 0 || c >= ROOM_COLS - 1) return;
+    if (![0, 1, 2, 3].includes(t)) return;
+
+    if (!room.map[r]) room.map[r] = [];
+    room.map[r][c] = t;
+
+    saveRooms();
+
+    io.to(room.id).emit('roomMapUpdated', { roomId: room.id, map: room.map });
   });
 
   socket.on('disconnect', () => {

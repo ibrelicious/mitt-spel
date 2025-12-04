@@ -285,6 +285,69 @@
             gap: 8px;
             margin-top: 10px;
         }
+
+        /* SHOP MODAL */
+        #shopModal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.85);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 115;
+        }
+        #shopContainer {
+            background-color: #1a1a1a;
+            padding: 20px 24px;
+            border-radius: 8px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.5);
+            color: #fff;
+            min-width: 340px;
+            max-width: 420px;
+        }
+        #shopContainer h3 {
+            margin-top: 0;
+            margin-bottom: 10px;
+            color: #ffd966;
+        }
+        #shopItems {
+            max-height: 260px;
+            overflow-y: auto;
+            margin-bottom: 10px;
+        }
+        .shop-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 6px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+            font-size: 14px;
+        }
+        .shop-item-main {
+            display: flex;
+            flex-direction: column;
+        }
+        .shop-item-name {
+            font-weight: bold;
+        }
+        .shop-item-price {
+            font-size: 12px;
+            color: #ffd966;
+        }
+        #shopButtons {
+            display: flex;
+            justify-content: flex-end;
+            margin-top: 6px;
+        }
+        #shopError {
+            color: #ff7777;
+            min-height: 18px;
+            margin-top: 6px;
+            font-size: 13px;
+        }
     </style>
 </head>
 <body>
@@ -338,6 +401,18 @@
         </div>
     </div>
 
+    <!-- SHOP -->
+    <div id="shopModal">
+        <div id="shopContainer">
+            <h3>Shop</h3>
+            <div id="shopItems"></div>
+            <div id="shopButtons">
+                <button id="shopCloseBtn" class="top-btn secondary">Stäng</button>
+            </div>
+            <div id="shopError"></div>
+        </div>
+    </div>
+
     <div id="mainWrapper">
         <div id="topBar">
             <div id="topBar-left">
@@ -346,7 +421,9 @@
             </div>
             <div id="topBar-right">
                 <span id="coinsLabel">Coins: <span id="coinsValue">0</span></span>
+                <button id="shopBtn" class="top-btn secondary">Shop</button>
                 <button id="settingsBtn" class="top-btn secondary">Inställningar</button>
+                <button id="editRoomBtn" class="top-btn secondary">Redigera rum</button>
                 <button id="createRoomBtn" class="top-btn">Skapa rum</button>
                 <button id="logoutBtn" class="top-btn secondary">Logga ut</button>
             </div>
@@ -401,6 +478,14 @@
         const shirtColorInput = document.getElementById('shirtColorInput');
         const pantsColorInput = document.getElementById('pantsColorInput');
 
+        const shopModal = document.getElementById('shopModal');
+        const shopBtn = document.getElementById('shopBtn');
+        const shopItemsEl = document.getElementById('shopItems');
+        const shopCloseBtn = document.getElementById('shopCloseBtn');
+        const shopError = document.getElementById('shopError');
+
+        const editRoomBtn = document.getElementById('editRoomBtn');
+
         const playerListEl = document.getElementById('playerList');
 
         let currentRoomId = 'lobby';
@@ -423,13 +508,18 @@
             appearance: { ...currentAppearance }
         };
 
-        const SPEED = 3; // långsammare rörelse
+        const SPEED = 3;
         let keys = {};
         let gameStarted = false;
 
         const TILE_SIZE = 40;
         const ROOM_COLS = canvas.width / TILE_SIZE;
         const ROOM_ROWS = canvas.height / TILE_SIZE;
+
+        let currentMap = createBaseMap();
+        let isEditing = false;
+        let isRoomOwner = false;
+        let shopItemsData = [];
 
         function createBaseMap() {
             const map = [];
@@ -447,13 +537,12 @@
             return map;
         }
 
-        let currentMap = createBaseMap();
-
         function canWalkClient(x, y) {
             const col = Math.floor(x / TILE_SIZE);
             const row = Math.floor(y / TILE_SIZE);
             if (row < 0 || row >= ROOM_ROWS || col < 0 || col >= ROOM_COLS) return false;
-            return currentMap[row][col] === 0;
+            const tile = currentMap[row][col];
+            return tile === 0 || tile === 2;
         }
 
         function drawMap() {
@@ -464,9 +553,13 @@
                     const y = row * TILE_SIZE;
 
                     if (tile === 1) {
-                        ctx.fillStyle = '#151824';
+                        ctx.fillStyle = '#151824'; // vägg
+                    } else if (tile === 2) {
+                        ctx.fillStyle = '#5e2a1f'; // matta
+                    } else if (tile === 3) {
+                        ctx.fillStyle = '#444444'; // möbel/block
                     } else {
-                        ctx.fillStyle = '#101522';
+                        ctx.fillStyle = '#101522'; // golv
                     }
                     ctx.fillRect(x, y, TILE_SIZE, TILE_SIZE);
 
@@ -530,6 +623,72 @@
             settingsModal.style.display = 'none';
         }
 
+        function openShopModal() {
+            shopError.textContent = '';
+            shopModal.style.display = 'flex';
+        }
+
+        function closeShopModal() {
+            shopModal.style.display = 'none';
+        }
+
+        async function loadShopItems() {
+            shopItemsEl.innerHTML = 'Laddar...';
+            try {
+                const res = await fetch('/api/shop');
+                const data = await res.json().catch(() => ({}));
+                if (!data.ok) {
+                    throw new Error(data.message || 'Kunde inte ladda shop.');
+                }
+                shopItemsData = data.items || [];
+                renderShopItems();
+            } catch (err) {
+                shopItemsEl.innerHTML = '';
+                shopError.textContent = err.message;
+            }
+        }
+
+        function renderShopItems() {
+            shopItemsEl.innerHTML = '';
+            if (!shopItemsData.length) {
+                shopItemsEl.textContent = 'Inga items i shopen ännu.';
+                return;
+            }
+            shopItemsData.forEach((item) => {
+                const div = document.createElement('div');
+                div.className = 'shop-item';
+                div.innerHTML = `
+                    <div class="shop-item-main">
+                        <div class="shop-item-name">${item.name}</div>
+                        <div class="shop-item-price">${item.price} coins</div>
+                    </div>
+                    <button class="top-btn shop-buy-btn">Köp</button>
+                `;
+                const btn = div.querySelector('.shop-buy-btn');
+                btn.addEventListener('click', () => buyShopItem(item.id));
+                shopItemsEl.appendChild(div);
+            });
+        }
+
+        async function buyShopItem(itemId) {
+            if (!currentUsername || !socket.id) return;
+            shopError.textContent = '';
+            try {
+                const data = await apiRequest('/api/buyItem', {
+                    username: currentUsername,
+                    socketId: socket.id,
+                    itemId
+                });
+                currentCoins = data.coins;
+                coinsValueEl.textContent = String(currentCoins);
+                applyAppearanceToPlayer(data.appearance || {});
+                player.appearance = { ...currentAppearance };
+                socket.emit('playerReady', { name: player.name, appearance: currentAppearance, username: currentUsername });
+            } catch (err) {
+                shopError.textContent = err.message;
+            }
+        }
+
         async function handleLogin() {
             const username = usernameInput.value.trim();
             const password = passwordInput.value;
@@ -559,7 +718,7 @@
 
                 nameModal.style.display = 'none';
                 gameStarted = true;
-                socket.emit('playerReady', { name: player.name, appearance: currentAppearance });
+                socket.emit('playerReady', { name: player.name, appearance: currentAppearance, username: currentUsername });
                 gameLoop();
             } catch (err) {
                 authError.textContent = err.message;
@@ -597,7 +756,7 @@
 
                 nameModal.style.display = 'none';
                 gameStarted = true;
-                socket.emit('playerReady', { name: player.name, appearance: currentAppearance });
+                socket.emit('playerReady', { name: player.name, appearance: currentAppearance, username: currentUsername });
                 gameLoop();
             } catch (err) {
                 authError.textContent = err.message;
@@ -624,26 +783,22 @@
             handleRegister();
         });
 
-        // Skapa rum
         createRoomBtn.addEventListener('click', () => {
             const name = prompt('Vad ska rummet heta?');
             if (!name) return;
             socket.emit('createRoom', name);
         });
 
-        // Byt rum
         roomSelect.addEventListener('change', () => {
             const roomId = roomSelect.value;
             if (!roomId || roomId === currentRoomId) return;
             socket.emit('joinRoom', roomId);
         });
 
-        // Logga ut
         logoutBtn.addEventListener('click', () => {
             window.location.reload();
         });
 
-        // Inställningar
         settingsBtn.addEventListener('click', () => {
             if (!currentUsername) return;
             openSettingsModal();
@@ -669,11 +824,31 @@
                     appearance: newAppearance
                 });
                 applyAppearanceToPlayer(newAppearance);
-                socket.emit('playerReady', { name: player.name, appearance: currentAppearance });
+                player.appearance = { ...currentAppearance };
+                socket.emit('playerReady', { name: player.name, appearance: currentAppearance, username: currentUsername });
                 closeSettingsModal();
             } catch (err) {
                 alert(err.message || 'Kunde inte spara utseende.');
             }
+        });
+
+        shopBtn.addEventListener('click', () => {
+            if (!currentUsername) return;
+            openShopModal();
+            loadShopItems();
+        });
+
+        shopCloseBtn.addEventListener('click', () => {
+            closeShopModal();
+        });
+
+        editRoomBtn.addEventListener('click', () => {
+            if (!isRoomOwner) {
+                alert('Endast rumsägaren kan redigera detta rum.');
+                return;
+            }
+            isEditing = !isEditing;
+            editRoomBtn.textContent = isEditing ? 'Avsluta redigering' : 'Redigera rum';
         });
 
         socket.on('forceLogout', (reason) => {
@@ -720,21 +895,17 @@
 
             ctx.save();
 
-            // Kropp (rektangel)
             const bodyWidth = r * 1.4;
             const bodyHeight = r * 1.6;
             const bodyX = p.x - bodyWidth / 2;
             const bodyY = p.y - bodyHeight / 2 + 4;
 
-            // Byxor (nedre del)
             ctx.fillStyle = pants;
             ctx.fillRect(bodyX, bodyY + bodyHeight / 2, bodyWidth, bodyHeight / 2);
 
-            // Tröja (övre del)
             ctx.fillStyle = shirt;
             ctx.fillRect(bodyX, bodyY, bodyWidth, bodyHeight / 2);
 
-            // Huvud (cirkel)
             const headRadius = r * 0.7;
             const headX = p.x;
             const headY = bodyY - headRadius + 6;
@@ -746,7 +917,6 @@
             ctx.lineWidth = 2;
             ctx.stroke();
 
-            // Namn
             const nameToDisplay = p.name || (isSelf ? 'DU' : 'KOMPIS'); 
             ctx.fillStyle = isSelf ? 'white' : '#f1f1f1';
             ctx.font = 'bold 14px Arial';
@@ -754,7 +924,6 @@
             ctx.textBaseline = 'middle';
             ctx.fillText(nameToDisplay, p.x, p.y + bodyHeight / 2 + 10); 
 
-            // Chattbubbla
             if (p.chatMessage && (!p.chatExpiresAt || nowTime <= p.chatExpiresAt)) {
                 const text = p.chatMessage;
                 ctx.font = '13px Arial';
@@ -910,6 +1079,7 @@
         socket.on('appearanceUpdated', ({ socketId, appearance }) => {
             if (socketId === socket.id) {
                 applyAppearanceToPlayer(appearance);
+                player.appearance = { ...currentAppearance };
             } else if (otherPlayers[socketId]) {
                 otherPlayers[socketId].appearance = appearance;
                 otherPlayers[socketId].color = appearance.shirt || otherPlayers[socketId].color;
@@ -930,14 +1100,42 @@
             });
         });
 
-        socket.on('roomJoined', ({ roomId, roomName }) => {
+        socket.on('roomJoined', ({ roomId, roomName, owner }) => {
             currentRoomId = roomId;
             currentRoomNameEl.textContent = 'Rum: ' + roomName;
             const options = Array.from(roomSelect.options);
             options.forEach(o => {
                 o.selected = (o.value === roomId);
             });
+            isRoomOwner = !!(currentUsername && owner && owner === currentUsername);
+            isEditing = false;
+            editRoomBtn.textContent = 'Redigera rum';
             updatePlayerList();
+        });
+
+        socket.on('roomMapUpdated', ({ roomId, map }) => {
+            if (roomId !== currentRoomId) return;
+            if (Array.isArray(map)) {
+                currentMap = map;
+            }
+        });
+
+        canvas.addEventListener('click', (e) => {
+            if (!isEditing || !isRoomOwner) return;
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            const col = Math.floor(x / TILE_SIZE);
+            const row = Math.floor(y / TILE_SIZE);
+            if (row <= 0 || row >= ROOM_ROWS - 1 || col <= 0 || col >= ROOM_COLS - 1) return;
+            const currentTile = currentMap[row]?.[col] ?? 0;
+            const newTile = (currentTile + 1) % 4;
+            socket.emit('editTile', {
+                roomId: currentRoomId,
+                row,
+                col,
+                tile: newTile
+            });
         });
 
         function gameLoop() {
