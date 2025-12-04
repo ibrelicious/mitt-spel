@@ -42,12 +42,13 @@ const DEFAULT_COINS = 100;
 // 4 = guld–ruta (walkable, start 4 i rad)
 // 5 = tärningsruta (walkable, tärningsobjekt)
 
-// Enkel shop med outfits + tärningsruta
+// Enkel shop med outfits + tärningsruta + möbler
 const SHOP_ITEMS = [
   {
     id: 'outfit_blue',
     name: 'Blå outfit',
     price: 20,
+    type: 'outfit',
     appearance: {
       skin: '#f1c27d',
       shirt: '#3498db',
@@ -58,6 +59,7 @@ const SHOP_ITEMS = [
     id: 'outfit_red',
     name: 'Röd outfit',
     price: 25,
+    type: 'outfit',
     appearance: {
       skin: '#f1c27d',
       shirt: '#e74c3c',
@@ -68,6 +70,7 @@ const SHOP_ITEMS = [
     id: 'outfit_green',
     name: 'Grön outfit',
     price: 25,
+    type: 'outfit',
     appearance: {
       skin: '#f1c27d',
       shirt: '#27ae60',
@@ -78,6 +81,7 @@ const SHOP_ITEMS = [
     id: 'outfit_purple',
     name: 'Lila outfit',
     price: 30,
+    type: 'outfit',
     appearance: {
       skin: '#f1c27d',
       shirt: '#8e44ad',
@@ -89,6 +93,21 @@ const SHOP_ITEMS = [
     name: 'Tärningsruta',
     price: 15,
     type: 'dice'
+  },
+  // --- Möbler i shopen ---
+  {
+    id: 'furn_chair_wood',
+    name: 'Trästol',
+    price: 15,
+    type: 'furniture',
+    spriteId: 'furn_chair_wood'
+  },
+  {
+    id: 'furn_table_small',
+    name: 'Litet bord',
+    price: 18,
+    type: 'furniture',
+    spriteId: 'furn_table_small'
   }
 ];
 
@@ -209,15 +228,19 @@ function loadRooms() {
       id: 'lobby',
       name: 'Lobby',
       owner: null,
-      map: createBaseMap()
+      map: createBaseMap(),
+      furniture: []
     };
     rooms[lobby.id] = lobby;
     saveRooms();
   } else {
-    // Se till att alla rum har map
+    // Se till att alla rum har map + furniture
     for (const id of Object.keys(rooms)) {
       if (!rooms[id].map) {
         rooms[id].map = createBaseMap();
+      }
+      if (!Array.isArray(rooms[id].furniture)) {
+        rooms[id].furniture = [];
       }
     }
   }
@@ -247,7 +270,8 @@ function createRoom(name, ownerUsername) {
     id,
     name,
     owner: ownerUsername || null,
-    map: createBaseMap()
+    map: createBaseMap(),
+    furniture: []
   };
   saveRooms();
   return rooms[id];
@@ -498,8 +522,13 @@ app.post('/api/buyItem', (req, res) => {
 
   user.coins -= item.price;
 
-  // Tärningsruta
   if (item.type === 'dice') {
+    // Tärningsruta – lägg i inventory (engångsägande)
+    if (!user.items.includes(item.id)) {
+      user.items.push(item.id);
+    }
+  } else if (item.type === 'furniture') {
+    // Möbel – inventory
     if (!user.items.includes(item.id)) {
       user.items.push(item.id);
     }
@@ -515,7 +544,7 @@ app.post('/api/buyItem', (req, res) => {
   saveUsers();
 
   const player = players[socketId];
-  if (player && item.type !== 'dice') {
+  if (player && item.type === 'outfit') {
     player.appearance = user.appearance;
     player.color = user.appearance.shirt;
     if (player.roomId) {
@@ -553,8 +582,12 @@ function joinPlayerToRoom(socket, roomId) {
   player.x = spawn.x;
   player.y = spawn.y;
 
-  // Skicka karta till spelaren
-  socket.emit('roomMapUpdated', { roomId, map: room.map });
+  // Skicka karta + möbler till spelaren
+  socket.emit('roomMapUpdated', {
+    roomId,
+    map: room.map,
+    furniture: room.furniture || []
+  });
 
   const roomPlayers = {};
   for (const [sid, p] of Object.entries(players)) {
@@ -703,7 +736,95 @@ io.on('connection', (socket) => {
 
     saveRooms();
 
-    io.to(room.id).emit('roomMapUpdated', { roomId: room.id, map: room.map });
+    io.to(room.id).emit('roomMapUpdated', {
+      roomId: room.id,
+      map: room.map,
+      furniture: room.furniture || []
+    });
+  });
+
+  // MÖBLER – placera
+  socket.on('placeFurniture', (data) => {
+    const player = players[socket.id];
+    if (!player || !player.roomId) return;
+    const room = rooms[player.roomId];
+    if (!room) return;
+
+    const { roomId, row, col, itemId } = data || {};
+    if (!roomId || roomId !== room.id) return;
+
+    // bara rumsägaren
+    if (!room.owner || room.owner !== (player.username || player.name)) {
+      return;
+    }
+
+    const r = Number(row);
+    const c = Number(col);
+    if (!Number.isInteger(r) || !Number.isInteger(c)) return;
+    if (r <= 0 || r >= ROOM_ROWS - 1 || c <= 0 || c >= ROOM_COLS - 1) return;
+
+    // kolla att det är en furniture-item och att användaren äger den
+    const item = SHOP_ITEMS.find((i) => i.id === itemId && i.type === 'furniture');
+    if (!item) return;
+
+    const username = player.username || player.name;
+    const user = users[username];
+    if (!user || !Array.isArray(user.items) || !user.items.includes(itemId)) {
+      return;
+    }
+
+    if (!Array.isArray(room.furniture)) {
+      room.furniture = [];
+    }
+
+    // ta bort eventuell befintlig möbel på samma ruta
+    room.furniture = room.furniture.filter((f) => !(f.row === r && f.col === c));
+
+    // Lägg till ny möbel
+    room.furniture.push({
+      row: r,
+      col: c,
+      itemId
+    });
+
+    saveRooms();
+
+    io.to(room.id).emit('roomMapUpdated', {
+      roomId: room.id,
+      map: room.map,
+      furniture: room.furniture
+    });
+  });
+
+  // MÖBLER – ta bort
+  socket.on('removeFurniture', (data) => {
+    const player = players[socket.id];
+    if (!player || !player.roomId) return;
+    const room = rooms[player.roomId];
+    if (!room) return;
+
+    const { roomId, row, col } = data || {};
+    if (!roomId || roomId !== room.id) return;
+
+    if (!room.owner || room.owner !== (player.username || player.name)) {
+      return;
+    }
+
+    const r = Number(row);
+    const c = Number(col);
+    if (!Number.isInteger(r) || !Number.isInteger(c)) return;
+
+    if (!Array.isArray(room.furniture) || room.furniture.length === 0) return;
+
+    room.furniture = room.furniture.filter((f) => !(f.row === r && f.col === c));
+
+    saveRooms();
+
+    io.to(room.id).emit('roomMapUpdated', {
+      roomId: room.id,
+      map: room.map,
+      furniture: room.furniture
+    });
   });
 
   // 4 i rad – bjuda in

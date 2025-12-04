@@ -349,6 +349,77 @@
             font-size: 13px;
         }
 
+        /* INVENTORY MODAL */
+        #inventoryModal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.85);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 116;
+        }
+        #inventoryContainer {
+            background-color: #1a1a1a;
+            padding: 20px 24px;
+            border-radius: 8px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.5);
+            color: #fff;
+            min-width: 340px;
+            max-width: 420px;
+        }
+        #inventoryContainer h3 {
+            margin-top: 0;
+            margin-bottom: 10px;
+            color: #4da3ff;
+        }
+        #inventoryItems {
+            max-height: 260px;
+            overflow-y: auto;
+            margin-bottom: 10px;
+        }
+        #inventoryInfo {
+            font-size: 12px;
+            color: #aaa;
+            margin-bottom: 6px;
+        }
+        #inventoryButtons {
+            display: flex;
+            justify-content: flex-end;
+            margin-top: 6px;
+        }
+        #inventoryError {
+            color: #ff7777;
+            min-height: 18px;
+            margin-top: 6px;
+            font-size: 13px;
+        }
+        .inventory-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 6px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+            cursor: pointer;
+        }
+        .inventory-item.selected {
+            background-color: rgba(77, 163, 255, 0.15);
+        }
+        .inventory-item-main {
+            display: flex;
+            flex-direction: column;
+        }
+        .inventory-item-name {
+            font-weight: bold;
+        }
+        .inventory-item-type {
+            font-size: 12px;
+            color: #ccc;
+        }
+
         /* CONNECT 4 MODAL */
         #c4Modal {
             position: fixed;
@@ -478,6 +549,22 @@
         </div>
     </div>
 
+    <!-- INVENTORY -->
+    <div id="inventoryModal">
+        <div id="inventoryContainer">
+            <h3>Inventory</h3>
+            <div id="inventoryItems"></div>
+            <div id="inventoryInfo">
+                Välj en möbel, gå sedan in i "Redigera rum" och klicka där du vill placera den.
+                Högerklick i redigeringsläge tar bort möbler.
+            </div>
+            <div id="inventoryButtons">
+                <button id="inventoryCloseBtn" class="top-btn secondary">Stäng</button>
+            </div>
+            <div id="inventoryError"></div>
+        </div>
+    </div>
+
     <!-- CONNECT 4 -->
     <div id="c4Modal">
         <div id="c4Container">
@@ -499,6 +586,7 @@
             <div id="topBar-right">
                 <span id="coinsLabel">Coins: <span id="coinsValue">0</span></span>
                 <button id="shopBtn" class="top-btn secondary">Shop</button>
+                <button id="inventoryBtn" class="top-btn secondary">Inventory</button>
                 <button id="settingsBtn" class="top-btn secondary">Inställningar</button>
                 <button id="editRoomBtn" class="top-btn secondary">Redigera rum</button>
                 <button id="createRoomBtn" class="top-btn">Skapa rum</button>
@@ -561,6 +649,12 @@
         const shopCloseBtn = document.getElementById('shopCloseBtn');
         const shopError = document.getElementById('shopError');
 
+        const inventoryModal = document.getElementById('inventoryModal');
+        const inventoryBtn = document.getElementById('inventoryBtn');
+        const inventoryItemsEl = document.getElementById('inventoryItems');
+        const inventoryCloseBtn = document.getElementById('inventoryCloseBtn');
+        const inventoryError = document.getElementById('inventoryError');
+
         const editRoomBtn = document.getElementById('editRoomBtn');
 
         const playerListEl = document.getElementById('playerList');
@@ -595,6 +689,22 @@
         // SMOOTH MOVEMENT
         const MOVE_TIME = 180; // ms per tile
 
+        // SPRITES
+        const spriteImages = {};
+        const DEFAULT_PLAYER_SPRITE_ID = 'player_default';
+
+        function loadSprite(id, src) {
+            const img = new Image();
+            img.src = src;
+            spriteImages[id] = img;
+        }
+
+        // Här kan du lägga riktiga PNG:er i /sprites/
+        // Byt filnamn om du använder andra assets.
+        loadSprite('player_default', '/sprites/player_default.png');
+        loadSprite('furn_chair_wood', '/sprites/furn_chair_wood.png');
+        loadSprite('furn_table_small', '/sprites/furn_table_small.png');
+
         let player = {
             row: 0,
             col: 0,
@@ -609,7 +719,8 @@
             isoTargetX: 0,
             isoTargetY: 0,
             moveStartTime: 0,
-            moveDuration: 0
+            moveDuration: 0,
+            spriteId: DEFAULT_PLAYER_SPRITE_ID
         };
 
         let keys = {};
@@ -620,6 +731,12 @@
         let isEditing = false;
         let isRoomOwner = false;
         let shopItemsData = [];
+
+        // MÖBLER I RUMMET (från servern)
+        let roomFurniture = [];
+
+        // vald möbel från inventory (itemId)
+        let selectedFurnitureItemId = null;
 
         // CONNECT 4 client state
         let currentC4Game = null;
@@ -712,6 +829,32 @@
                     const tile = currentMap[row][col];
                     drawIsoTile(col, row, tile);
                 }
+            }
+        }
+
+        function drawFurniture(f) {
+            const pos = gridToIso(f.col, f.row);
+            const spriteId = f.itemId;
+            const img = spriteImages[spriteId];
+
+            if (img && img.complete) {
+                const w = img.width;
+                const h = img.height;
+                const drawX = pos.x - w / 2;
+                const drawY = pos.y - h + ISO_TILE_HEIGHT / 2;
+                ctx.drawImage(img, drawX, drawY);
+            } else {
+                // fallback: isometrisk kloss
+                const hw = ISO_TILE_WIDTH / 2;
+                const hh = ISO_TILE_HEIGHT / 2;
+                ctx.fillStyle = '#777';
+                ctx.beginPath();
+                ctx.moveTo(pos.x, pos.y - hh);
+                ctx.lineTo(pos.x + hw, pos.y);
+                ctx.lineTo(pos.x, pos.y + hh);
+                ctx.lineTo(pos.x - hw, pos.y);
+                ctx.closePath();
+                ctx.fill();
             }
         }
 
@@ -818,6 +961,10 @@
             });
         }
 
+        function getItemDefById(id) {
+            return (shopItemsData || []).find((it) => it.id === id) || null;
+        }
+
         async function buyShopItem(itemId) {
             if (!currentUsername || !socket.id) return;
             shopError.textContent = '';
@@ -836,8 +983,79 @@
                 }
                 ownedItems = Array.isArray(data.items) ? data.items : ownedItems;
                 renderShopItems();
+                // även inventory kan uppdateras
+                if (inventoryModal.style.display === 'flex') {
+                    renderInventoryItems();
+                }
             } catch (err) {
                 shopError.textContent = err.message;
+            }
+        }
+
+        function openInventoryModal() {
+            if (!currentUsername) return;
+            inventoryError.textContent = '';
+            inventoryModal.style.display = 'flex';
+
+            if (!shopItemsData.length) {
+                loadShopItems()
+                    .then(() => {
+                        renderInventoryItems();
+                    })
+                    .catch((err) => {
+                        inventoryError.textContent = err.message || 'Kunde inte ladda items.';
+                    });
+            } else {
+                renderInventoryItems();
+            }
+        }
+
+        function closeInventoryModal() {
+            inventoryModal.style.display = 'none';
+        }
+
+        function renderInventoryItems() {
+            inventoryItemsEl.innerHTML = '';
+
+            if (!ownedItems || !ownedItems.length) {
+                inventoryItemsEl.textContent = 'Du äger inga items ännu.';
+                return;
+            }
+
+            const seen = new Set();
+            ownedItems.forEach((itemId) => {
+                const def = getItemDefById(itemId);
+                if (!def || def.type !== 'furniture') return;
+                if (seen.has(itemId)) return;
+                seen.add(itemId);
+
+                const div = document.createElement('div');
+                div.className = 'inventory-item';
+                if (selectedFurnitureItemId === itemId) {
+                    div.classList.add('selected');
+                }
+                div.innerHTML = `
+                    <div class="inventory-item-main">
+                        <div class="inventory-item-name">${def.name}</div>
+                        <div class="inventory-item-type">Möbel (placeras i rum)</div>
+                    </div>
+                    <span>${itemId === selectedFurnitureItemId ? 'Vald' : 'Klicka'}</span>
+                `;
+
+                div.addEventListener('click', () => {
+                    if (selectedFurnitureItemId === itemId) {
+                        selectedFurnitureItemId = null;
+                    } else {
+                        selectedFurnitureItemId = itemId;
+                    }
+                    renderInventoryItems();
+                });
+
+                inventoryItemsEl.appendChild(div);
+            });
+
+            if (!inventoryItemsEl.children.length) {
+                inventoryItemsEl.textContent = 'Du äger inga möbler ännu. Köp i shopen.';
             }
         }
 
@@ -871,6 +1089,8 @@
 
                 nameModal.style.display = 'none';
                 gameStarted = true;
+                // ladda shop items i bakgrunden (för inventory/sprites)
+                loadShopItems().catch(() => {});
                 socket.emit('playerReady', { name: player.name, appearance: currentAppearance, username: currentUsername });
                 gameLoop();
             } catch (err) {
@@ -910,6 +1130,7 @@
 
                 nameModal.style.display = 'none';
                 gameStarted = true;
+                loadShopItems().catch(() => {});
                 socket.emit('playerReady', { name: player.name, appearance: currentAppearance, username: currentUsername });
                 gameLoop();
             } catch (err) {
@@ -994,6 +1215,14 @@
 
         shopCloseBtn.addEventListener('click', () => {
             closeShopModal();
+        });
+
+        inventoryBtn.addEventListener('click', () => {
+            openInventoryModal();
+        });
+
+        inventoryCloseBtn.addEventListener('click', () => {
+            closeInventoryModal();
         });
 
         editRoomBtn.addEventListener('click', () => {
@@ -1096,35 +1325,49 @@
 
             ctx.save();
 
-            const bodyWidth = r * 1.4;
-            const bodyHeight = r * 1.6;
-            const bodyX = px - bodyWidth / 2;
-            const bodyY = py - bodyHeight / 2 + 14;
+            // --- Sprite eller fallback ---
+            const spriteId = p.spriteId || DEFAULT_PLAYER_SPRITE_ID;
+            const img = spriteImages[spriteId];
+            if (img && img.complete) {
+                const w = img.width;
+                const h = img.height;
+                const drawX = px - w / 2;
+                const drawY = py - h + ISO_TILE_HEIGHT; // justering för fötter
+                ctx.drawImage(img, drawX, drawY);
+            } else {
+                // Fallback: enkel kropp
+                const bodyWidth = r * 1.4;
+                const bodyHeight = r * 1.6;
+                const bodyX = px - bodyWidth / 2;
+                const bodyY = py - bodyHeight / 2 + 14;
 
-            ctx.fillStyle = pants;
-            ctx.fillRect(bodyX, bodyY + bodyHeight / 2, bodyWidth, bodyHeight / 2);
+                ctx.fillStyle = pants;
+                ctx.fillRect(bodyX, bodyY + bodyHeight / 2, bodyWidth, bodyHeight / 2);
 
-            ctx.fillStyle = shirt;
-            ctx.fillRect(bodyX, bodyY, bodyWidth, bodyHeight / 2);
+                ctx.fillStyle = shirt;
+                ctx.fillRect(bodyX, bodyY, bodyWidth, bodyHeight / 2);
 
-            const headRadius = r * 0.7;
-            const headX = px;
-            const headY = bodyY - headRadius + 6;
-            ctx.beginPath();
-            ctx.arc(headX, headY, headRadius, 0, Math.PI * 2);
-            ctx.fillStyle = skin;
-            ctx.fill();
-            ctx.strokeStyle = 'black';
-            ctx.lineWidth = 2;
-            ctx.stroke();
+                const headRadius = r * 0.7;
+                const headX = px;
+                const headY = bodyY - headRadius + 6;
+                ctx.beginPath();
+                ctx.arc(headX, headY, headRadius, 0, Math.PI * 2);
+                ctx.fillStyle = skin;
+                ctx.fill();
+                ctx.strokeStyle = 'black';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
 
+            // Namn
             const nameToDisplay = p.name || (isSelf ? 'DU' : 'KOMPIS'); 
             ctx.fillStyle = isSelf ? 'white' : '#f1f1f1';
             ctx.font = 'bold 14px Arial';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText(nameToDisplay, px, bodyY + bodyHeight + 10); 
+            ctx.fillText(nameToDisplay, px, py + 24); 
 
+            // Chat-bubbla
             if (p.chatMessage && (!p.chatExpiresAt || nowTime <= p.chatExpiresAt)) {
                 const text = p.chatMessage;
                 ctx.font = '13px Arial';
@@ -1133,7 +1376,7 @@
                 const boxWidth = Math.min(textWidth + paddingX * 2, 260);
                 const boxHeight = 24;
                 let boxX = px - boxWidth / 2;
-                let boxY = headY - headRadius - boxHeight - 10;
+                let boxY = py - 50 - boxHeight;
 
                 ctx.beginPath();
                 if (ctx.roundRect) {
@@ -1154,7 +1397,7 @@
 
                 ctx.beginPath();
                 const tipX = px;
-                const tipY = headY - headRadius + 2;
+                const tipY = py - 20;
                 ctx.moveTo(tipX - 8, boxY + boxHeight);
                 ctx.lineTo(tipX + 3, boxY + boxHeight);
                 ctx.lineTo(tipX - 3, tipY);
@@ -1238,7 +1481,8 @@
                         isoTargetX: pos.x,
                         isoTargetY: pos.y,
                         moveStartTime: 0,
-                        moveDuration: 0
+                        moveDuration: 0,
+                        spriteId: DEFAULT_PLAYER_SPRITE_ID
                     };
                 }
             }
@@ -1272,7 +1516,8 @@
                 isoTargetX: pos.x,
                 isoTargetY: pos.y,
                 moveStartTime: 0,
-                moveDuration: 0
+                moveDuration: 0,
+                spriteId: DEFAULT_PLAYER_SPRITE_ID
             };
             updatePlayerList();
         });
@@ -1299,7 +1544,8 @@
                     isoTargetX: pos.x,
                     isoTargetY: pos.y,
                     moveStartTime: 0,
-                    moveDuration: 0
+                    moveDuration: 0,
+                    spriteId: DEFAULT_PLAYER_SPRITE_ID
                 };
             } else {
                 const op = otherPlayers[playerInfo.socketId];
@@ -1361,11 +1607,12 @@
             updatePlayerList();
         });
 
-        socket.on('roomMapUpdated', ({ roomId, map }) => {
+        socket.on('roomMapUpdated', ({ roomId, map, furniture }) => {
             if (roomId !== currentRoomId) return;
             if (Array.isArray(map)) {
                 currentMap = map;
             }
+            roomFurniture = Array.isArray(furniture) ? furniture : [];
         });
 
         canvas.addEventListener('click', (e) => {
@@ -1377,6 +1624,18 @@
             if (!grid) return;
             const { row, col } = grid;
             if (row <= 0 || row >= ROOM_ROWS - 1 || col <= 0 || col >= ROOM_COLS - 1) return;
+
+            // Om en möbel är vald i inventory → placera möbel
+            if (selectedFurnitureItemId) {
+                socket.emit('placeFurniture', {
+                    roomId: currentRoomId,
+                    row,
+                    col,
+                    itemId: selectedFurnitureItemId
+                });
+                return;
+            }
+
             const currentTile = currentMap[row]?.[col] ?? 0;
             const newTile = (currentTile + 1) % 6; // 0..5
 
@@ -1402,6 +1661,20 @@
             const grid = screenToGrid(sx, sy);
             if (!grid) return;
             const { row, col } = grid;
+
+            // I edit-läge: högerklick tar bort möbel om det finns en
+            if (isEditing && isRoomOwner) {
+                const hasFurniture = roomFurniture.some(f => f.row === row && f.col === col);
+                if (hasFurniture) {
+                    socket.emit('removeFurniture', {
+                        roomId: currentRoomId,
+                        row,
+                        col
+                    });
+                    return;
+                }
+            }
+
             const tile = currentMap[row]?.[col] ?? 1;
 
             if (tile === 4) {
@@ -1574,16 +1847,31 @@
                 }
             }
 
-            // Rita spelare – sortera efter row+col
-            const allEntities = [
-                { ...player, isSelf: true, id: socket.id },
-                ...Object.entries(otherPlayers).map(([id, p]) => ({ ...p, isSelf: false, id }))
-            ];
-            allEntities.sort((a, b) => (a.row + a.col) - (b.row + b.col));
+            // Rita i rätt djup-ordning: möbler + spelare
+            const drawables = [];
 
-            for (const ent of allEntities) {
-                drawPlayer(ent, ent.isSelf, now);
-            }
+            drawables.push({ kind: 'player', entity: player, isSelf: true });
+            Object.entries(otherPlayers).forEach(([id, op]) => {
+                drawables.push({ kind: 'player', entity: op, isSelf: false });
+            });
+
+            roomFurniture.forEach((f) => {
+                drawables.push({ kind: 'furniture', entity: f });
+            });
+
+            drawables.sort((a, b) => {
+                const ea = a.entity;
+                const eb = b.entity;
+                return (ea.row + ea.col) - (eb.row + eb.col);
+            });
+
+            drawables.forEach((d) => {
+                if (d.kind === 'player') {
+                    drawPlayer(d.entity, d.isSelf, now);
+                } else {
+                    drawFurniture(d.entity);
+                }
+            });
 
             ctx.fillStyle = 'rgba(255,255,255,0.9)';
             ctx.font = '16px Arial';
