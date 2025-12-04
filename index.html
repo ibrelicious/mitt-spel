@@ -12,16 +12,89 @@
             align-items: flex-start;
             padding-top: 20px;
             font-family: Arial, sans-serif;
+            color: #f5f5f5;
         }
+
+        #mainWrapper {
+            width: 1100px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        #topBar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            background: rgba(10, 14, 28, 0.95);
+            border: 1px solid #222;
+            border-radius: 4px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.4);
+            font-size: 14px;
+        }
+
+        #topBar-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        #topBar-right {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        #currentRoomName {
+            font-weight: bold;
+            color: #4da3ff;
+        }
+
+        #roomSelect {
+            background: #050814;
+            color: #f5f5f5;
+            border: 1px solid #333;
+            border-radius: 4px;
+            padding: 4px 6px;
+        }
+
+        .top-btn {
+            padding: 6px 10px;
+            background-color: #4da3ff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: bold;
+        }
+        .top-btn.secondary {
+            background-color: #333;
+        }
+        .top-btn:hover {
+            background-color: #387bd8;
+        }
+        .top-btn.secondary:hover {
+            background-color: #555;
+        }
+
+        #contentArea {
+            display: flex;
+            gap: 10px;
+        }
+
         #gameArea {
             display: flex;
             flex-direction: column;
             align-items: center;
         }
+
         canvas {
             border: 2px solid #111;
-            background-color: #101522;
+            background-color: #060913;
             box-shadow: 0 0 25px rgba(0, 0, 0, 0.7);
+            display: block;
         }
 
         #chatContainer {
@@ -54,7 +127,43 @@
         #chatInput::placeholder {
             color: #777;
         }
-        
+
+        #sidePanel {
+            width: 260px;
+            min-height: 600px;
+            background: rgba(10, 14, 28, 0.98);
+            border: 1px solid #222;
+            border-radius: 4px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.4);
+            padding: 10px;
+            box-sizing: border-box;
+            font-size: 14px;
+        }
+
+        #sidePanel h3 {
+            margin: 0 0 8px 0;
+            font-size: 16px;
+            color: #4da3ff;
+        }
+
+        #playerList {
+            list-style: none;
+            padding-left: 0;
+            margin: 0;
+        }
+
+        #playerList li {
+            padding: 4px 6px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+
+        #playerList li span.you {
+            color: #7CFC00;
+            font-size: 11px;
+            margin-left: 4px;
+        }
+
+        /* LOGIN / REGISTER MODAL */
         #nameModal {
             position: fixed;
             top: 0;
@@ -125,7 +234,7 @@
     </style>
 </head>
 <body>
-    
+    <!-- LOGIN / REGISTER -->
     <div id="nameModal">
         <div id="nameInputContainer">
             <h2>Logga in eller skapa konto</h2>
@@ -152,12 +261,32 @@
         </div>
     </div>
 
-    <div id="gameArea">
-        <canvas id="gameCanvas" width="800" height="600"></canvas>
-        
-        <div id="chatContainer">
-            <div id="chatMessages"></div>
-            <input id="chatInput" type="text" placeholder="Skriv ett meddelande och tryck Enter..." maxlength="80">
+    <div id="mainWrapper">
+        <div id="topBar">
+            <div id="topBar-left">
+                <span id="currentRoomName">Rum: Lobby</span>
+                <select id="roomSelect"></select>
+            </div>
+            <div id="topBar-right">
+                <button id="createRoomBtn" class="top-btn">Skapa rum</button>
+                <button id="logoutBtn" class="top-btn secondary">Logga ut</button>
+            </div>
+        </div>
+
+        <div id="contentArea">
+            <div id="gameArea">
+                <canvas id="gameCanvas" width="800" height="600"></canvas>
+                
+                <div id="chatContainer">
+                    <div id="chatMessages"></div>
+                    <input id="chatInput" type="text" placeholder="Skriv ett meddelande och tryck Enter..." maxlength="80">
+                </div>
+            </div>
+
+            <div id="sidePanel">
+                <h3>Spelare i rummet</h3>
+                <ul id="playerList"></ul>
+            </div>
         </div>
     </div>
 
@@ -178,6 +307,14 @@
         const registerBtn = document.getElementById('registerBtn');
         const authError = document.getElementById('authError');
 
+        const currentRoomNameEl = document.getElementById('currentRoomName');
+        const roomSelect = document.getElementById('roomSelect');
+        const createRoomBtn = document.getElementById('createRoomBtn');
+        const logoutBtn = document.getElementById('logoutBtn');
+        const playerListEl = document.getElementById('playerList');
+
+        let currentRoomId = 'lobby';
+
         let player = {
             x: 0,
             y: 0,
@@ -191,6 +328,71 @@
         const SPEED = 5;
         let keys = {};
         let gameStarted = false;
+
+        // TILE-MAP (samma logik som på servern)
+        const TILE_SIZE = 40;
+        const ROOM_COLS = canvas.width / TILE_SIZE;
+        const ROOM_ROWS = canvas.height / TILE_SIZE;
+
+        function createBaseMap() {
+            const map = [];
+            for (let row = 0; row < ROOM_ROWS; row++) {
+                const rowArr = [];
+                for (let col = 0; col < ROOM_COLS; col++) {
+                    if (row === 0 || row === ROOM_ROWS - 1 || col === 0 || col === ROOM_COLS - 1) {
+                        rowArr.push(1);
+                    } else {
+                        rowArr.push(0);
+                    }
+                }
+                map.push(rowArr);
+            }
+            return map;
+        }
+
+        let currentMap = createBaseMap();
+
+        function canWalkClient(x, y) {
+            const col = Math.floor(x / TILE_SIZE);
+            const row = Math.floor(y / TILE_SIZE);
+            if (row < 0 || row >= ROOM_ROWS || col < 0 || col >= ROOM_COLS) return false;
+            return currentMap[row][col] === 0;
+        }
+
+        function drawMap() {
+            for (let row = 0; row < ROOM_ROWS; row++) {
+                for (let col = 0; col < ROOM_COLS; col++) {
+                    const tile = currentMap[row][col];
+                    const x = col * TILE_SIZE;
+                    const y = row * TILE_SIZE;
+
+                    if (tile === 1) {
+                        ctx.fillStyle = '#151824'; // vägg
+                    } else {
+                        ctx.fillStyle = '#101522'; // golv
+                    }
+                    ctx.fillRect(x, y, TILE_SIZE, TILE_SIZE);
+
+                    ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+                    ctx.strokeRect(x, y, TILE_SIZE, TILE_SIZE);
+                }
+            }
+        }
+
+        function updatePlayerList() {
+            playerListEl.innerHTML = '';
+
+            const liSelf = document.createElement('li');
+            liSelf.innerHTML = `${player.name} <span class="you">(du)</span>`;
+            playerListEl.appendChild(liSelf);
+
+            for (const id in otherPlayers) {
+                const op = otherPlayers[id];
+                const li = document.createElement('li');
+                li.textContent = op.name || 'Spelare';
+                playerListEl.appendChild(li);
+            }
+        }
 
         async function apiRequest(path, body) {
             authError.textContent = '';
@@ -291,12 +493,32 @@
             handleRegister();
         });
 
+        // Skapa rum
+        createRoomBtn.addEventListener('click', () => {
+            const name = prompt('Vad ska rummet heta?');
+            if (!name) return;
+            socket.emit('createRoom', name);
+        });
+
+        // Byt rum
+        roomSelect.addEventListener('change', () => {
+            const roomId = roomSelect.value;
+            if (!roomId || roomId === currentRoomId) return;
+            socket.emit('joinRoom', roomId);
+        });
+
+        // Logga ut
+        logoutBtn.addEventListener('click', () => {
+            window.location.reload();
+        });
+
         // Om servern kikar ut oss (inloggad någon annanstans)
         socket.on('forceLogout', (reason) => {
             alert(reason || 'Du loggades ut.');
             window.location.reload();
         });
 
+        // Tangentbord
         document.addEventListener('keydown', (e) => {
             if (!gameStarted) return;
             if (document.activeElement !== chatInput) {
@@ -310,24 +532,20 @@
 
         function updatePlayerPosition() {
             let moved = false;
+            let newX = player.x;
+            let newY = player.y;
 
-            if (keys['ArrowUp'] || keys['w']) { player.y -= SPEED; moved = true; }
-            if (keys['ArrowDown'] || keys['s']) { player.y += SPEED; moved = true; }
-            if (keys['ArrowLeft'] || keys['a']) { player.x -= SPEED; moved = true; }
-            if (keys['ArrowRight'] || keys['d']) { player.x += SPEED; moved = true; }
+            if (keys['ArrowUp'] || keys['w']) { newY -= SPEED; moved = true; }
+            if (keys['ArrowDown'] || keys['s']) { newY += SPEED; moved = true; }
+            if (keys['ArrowLeft'] || keys['a']) { newX -= SPEED; moved = true; }
+            if (keys['ArrowRight'] || keys['d']) { newX += SPEED; moved = true; }
 
             if (moved) {
-                const minX = player.radius;
-                const maxX = canvas.width - player.radius;
-                const minY = player.radius;
-                const maxY = canvas.height - player.radius;
-
-                if (player.x < minX) player.x = minX;
-                if (player.x > maxX) player.x = maxX;
-                if (player.y < minY) player.y = minY;
-                if (player.y > maxY) player.y = maxY;
-
-                socket.emit('playerMovement', { x: player.x, y: player.y });
+                if (canWalkClient(newX, newY)) {
+                    player.x = newX;
+                    player.y = newY;
+                    socket.emit('playerMovement', { x: player.x, y: player.y });
+                }
             }
         }
 
@@ -453,12 +671,14 @@
                     };
                 }
             }
+            updatePlayerList();
         });
         
         socket.on('playerReady', (playerInfo) => {
             if (otherPlayers[playerInfo.socketId]) {
                 otherPlayers[playerInfo.socketId].name = playerInfo.name;
             }
+            updatePlayerList();
         });
 
         socket.on('newPlayer', (playerInfo) => {
@@ -469,6 +689,7 @@
                 chatMessage: null,
                 chatExpiresAt: null
             };
+            updatePlayerList();
         });
 
         socket.on('playerMoved', (playerInfo) => {
@@ -492,6 +713,31 @@
 
         socket.on('playerDisconnected', (socketId) => {
             delete otherPlayers[socketId];
+            updatePlayerList();
+        });
+
+        socket.on('roomList', (rooms) => {
+            roomSelect.innerHTML = '';
+            rooms.forEach((room) => {
+                const opt = document.createElement('option');
+                opt.value = room.id;
+                opt.textContent = room.name;
+                if (room.id === currentRoomId) {
+                    opt.selected = true;
+                    currentRoomNameEl.textContent = 'Rum: ' + room.name;
+                }
+                roomSelect.appendChild(opt);
+            });
+        });
+
+        socket.on('roomJoined', ({ roomId, roomName }) => {
+            currentRoomId = roomId;
+            currentRoomNameEl.textContent = 'Rum: ' + roomName;
+            const options = Array.from(roomSelect.options);
+            options.forEach(o => {
+                o.selected = (o.value === roomId);
+            });
+            updatePlayerList();
         });
 
         function gameLoop() {
@@ -501,12 +747,8 @@
             }
             const now = Date.now();
 
-            const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
-            gradient.addColorStop(0, '#15192b');
-            gradient.addColorStop(0.5, '#1d3659');
-            gradient.addColorStop(1, '#234f5e');
-            ctx.fillStyle = gradient;
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawMap();
 
             updatePlayerPosition();
 
