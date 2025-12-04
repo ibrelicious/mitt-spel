@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="UTF-8" />
-    <title>Mitt Spel - Rum</title>
+    <title>Mitt Spel - Rum (Isometrisk)</title>
     <style>
         body {
             margin: 0;
@@ -580,9 +580,20 @@
             pants: '#2c3e50'
         };
 
+        // TILE / GRID
+        const TILE_SIZE = 40;
+        const ROOM_COLS = canvas.width / TILE_SIZE;
+        const ROOM_ROWS = canvas.height / TILE_SIZE;
+
+        // ISOMETRISK
+        const ISO_TILE_WIDTH = 48;
+        const ISO_TILE_HEIGHT = 24;
+        const ISO_OFFSET_X = canvas.width / 2;  // mitt på canvas
+        const ISO_OFFSET_Y = 60;                // höjd offset, justera efter smak
+
         let player = {
-            x: 0,
-            y: 0,
+            row: 0,
+            col: 0,
             radius: 20,
             color: 'blue',
             name: 'Okänd',
@@ -591,13 +602,11 @@
             appearance: { ...currentAppearance }
         };
 
-        const SPEED = 3;
+        const MOVE_DELAY = 130; // ms per tile-steg
+        let lastMoveTime = 0;
+
         let keys = {};
         let gameStarted = false;
-
-        const TILE_SIZE = 40;
-        const ROOM_COLS = canvas.width / TILE_SIZE;
-        const ROOM_ROWS = canvas.height / TILE_SIZE;
 
         // Tiles: 0=golv, 1=vägg, 2=matta, 3=block, 4=guld (4-i-rad)
         let currentMap = createBaseMap();
@@ -606,7 +615,7 @@
         let shopItemsData = [];
 
         // CONNECT 4 client state
-        let currentC4Game = null; // {gameId, board, currentTurn, p1, p2}
+        let currentC4Game = null;
 
         function createBaseMap() {
             const map = [];
@@ -624,40 +633,76 @@
             return map;
         }
 
-        function isWalkableTileClient(tile) {
+        function canWalkTile(row, col) {
+            if (row < 0 || row >= ROOM_ROWS || col < 0 || col >= ROOM_COLS) return false;
+            const tile = currentMap[row]?.[col] ?? 1;
             return tile === 0 || tile === 2 || tile === 4;
         }
 
-        function canWalkClient(x, y) {
-            const col = Math.floor(x / TILE_SIZE);
-            const row = Math.floor(y / TILE_SIZE);
-            if (row < 0 || row >= ROOM_ROWS || col < 0 || col >= ROOM_COLS) return false;
-            const tile = currentMap[row][col];
-            return isWalkableTileClient(tile);
+        function gridToIso(col, row) {
+            const x = (col - row) * (ISO_TILE_WIDTH / 2) + ISO_OFFSET_X;
+            const y = (col + row) * (ISO_TILE_HEIGHT / 2) + ISO_OFFSET_Y;
+            return { x, y };
+        }
+
+        function screenToGrid(sx, sy) {
+            const dx = sx - ISO_OFFSET_X;
+            const dy = sy - ISO_OFFSET_Y;
+
+            const a = dx / (ISO_TILE_WIDTH / 2);
+            const b = dy / (ISO_TILE_HEIGHT / 2);
+
+            const colFloat = (a + b) / 2;
+            const rowFloat = (b - a) / 2;
+
+            let col = Math.floor(colFloat + 0.5);
+            let row = Math.floor(rowFloat + 0.5);
+
+            if (row < 0 || row >= ROOM_ROWS || col < 0 || col >= ROOM_COLS) {
+                return null;
+            }
+            return { row, col };
+        }
+
+        function drawIsoTile(col, row, tile) {
+            const p = gridToIso(col, row);
+            const cx = p.x;
+            const cy = p.y;
+
+            const hw = ISO_TILE_WIDTH / 2;
+            const hh = ISO_TILE_HEIGHT / 2;
+
+            if (tile === 1) {
+                ctx.fillStyle = '#151824';
+            } else if (tile === 2) {
+                ctx.fillStyle = '#5e2a1f';
+            } else if (tile === 3) {
+                ctx.fillStyle = '#444444';
+            } else if (tile === 4) {
+                ctx.fillStyle = '#DAA520';
+            } else {
+                ctx.fillStyle = '#101522';
+            }
+
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - hh);
+            ctx.lineTo(cx + hw, cy);
+            ctx.lineTo(cx, cy + hh);
+            ctx.lineTo(cx - hw, cy);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
         }
 
         function drawMap() {
+            // Rita i rätt ordning (rad för rad) så saker bak hamnar bakom
             for (let row = 0; row < ROOM_ROWS; row++) {
                 for (let col = 0; col < ROOM_COLS; col++) {
                     const tile = currentMap[row][col];
-                    const x = col * TILE_SIZE;
-                    const y = row * TILE_SIZE;
-
-                    if (tile === 1) {
-                        ctx.fillStyle = '#151824'; // vägg
-                    } else if (tile === 2) {
-                        ctx.fillStyle = '#5e2a1f'; // matta
-                    } else if (tile === 3) {
-                        ctx.fillStyle = '#444444'; // möbel/block
-                    } else if (tile === 4) {
-                        ctx.fillStyle = '#DAA520'; // guld-ruta
-                    } else {
-                        ctx.fillStyle = '#101522'; // golv
-                    }
-                    ctx.fillRect(x, y, TILE_SIZE, TILE_SIZE);
-
-                    ctx.strokeStyle = 'rgba(0,0,0,0.25)';
-                    ctx.strokeRect(x, y, TILE_SIZE, TILE_SIZE);
+                    drawIsoTile(col, row, tile);
                 }
             }
         }
@@ -702,7 +747,6 @@
                 pants: appearance.pants || '#2c3e50'
             };
             player.appearance = { ...currentAppearance };
-            player.color = currentAppearance.shirt;
         }
 
         function openSettingsModal() {
@@ -967,22 +1011,33 @@
         });
 
         function updatePlayerPosition() {
-            let moved = false;
-            let newX = player.x;
-            let newY = player.y;
+            const now = Date.now();
+            if (now - lastMoveTime < MOVE_DELAY) return;
 
-            if (keys['ArrowUp'] || keys['w']) { newY -= SPEED; moved = true; }
-            if (keys['ArrowDown'] || keys['s']) { newY += SPEED; moved = true; }
-            if (keys['ArrowLeft'] || keys['a']) { newX -= SPEED; moved = true; }
-            if (keys['ArrowRight'] || keys['d']) { newX += SPEED; moved = true; }
+            let dRow = 0;
+            let dCol = 0;
 
-            if (moved) {
-                if (canWalkClient(newX, newY)) {
-                    player.x = newX;
-                    player.y = newY;
-                    socket.emit('playerMovement', { x: player.x, y: player.y });
-                }
-            }
+            if (keys['ArrowUp'] || keys['w'])    dRow -= 1;
+            if (keys['ArrowDown'] || keys['s'])  dRow += 1;
+            if (keys['ArrowLeft'] || keys['a'])  dCol -= 1;
+            if (keys['ArrowRight'] || keys['d']) dCol += 1;
+
+            if (dRow === 0 && dCol === 0) return;
+
+            const newRow = player.row + dRow;
+            const newCol = player.col + dCol;
+
+            if (!canWalkTile(newRow, newCol)) return;
+
+            player.row = newRow;
+            player.col = newCol;
+
+            const worldX = player.col * TILE_SIZE + TILE_SIZE / 2;
+            const worldY = player.row * TILE_SIZE + TILE_SIZE / 2;
+
+            socket.emit('playerMovement', { x: worldX, y: worldY });
+
+            lastMoveTime = now;
         }
 
         function drawPlayer(p, isSelf = false, nowTime = Date.now()) {
@@ -992,12 +1047,16 @@
             const shirt = appearance.shirt || p.color || '#3498db';
             const pants = appearance.pants || '#2c3e50';
 
+            const pos = gridToIso(p.col, p.row);
+            const px = pos.x;
+            const py = pos.y;
+
             ctx.save();
 
             const bodyWidth = r * 1.4;
             const bodyHeight = r * 1.6;
-            const bodyX = p.x - bodyWidth / 2;
-            const bodyY = p.y - bodyHeight / 2 + 4;
+            const bodyX = px - bodyWidth / 2;
+            const bodyY = py - bodyHeight / 2 + 14;
 
             ctx.fillStyle = pants;
             ctx.fillRect(bodyX, bodyY + bodyHeight / 2, bodyWidth, bodyHeight / 2);
@@ -1006,7 +1065,7 @@
             ctx.fillRect(bodyX, bodyY, bodyWidth, bodyHeight / 2);
 
             const headRadius = r * 0.7;
-            const headX = p.x;
+            const headX = px;
             const headY = bodyY - headRadius + 6;
             ctx.beginPath();
             ctx.arc(headX, headY, headRadius, 0, Math.PI * 2);
@@ -1021,7 +1080,7 @@
             ctx.font = 'bold 14px Arial';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText(nameToDisplay, p.x, p.y + bodyHeight / 2 + 10); 
+            ctx.fillText(nameToDisplay, px, bodyY + bodyHeight + 10); 
 
             if (p.chatMessage && (!p.chatExpiresAt || nowTime <= p.chatExpiresAt)) {
                 const text = p.chatMessage;
@@ -1030,7 +1089,7 @@
                 const textWidth = ctx.measureText(text).width;
                 const boxWidth = Math.min(textWidth + paddingX * 2, 260);
                 const boxHeight = 24;
-                let boxX = p.x - boxWidth / 2;
+                let boxX = px - boxWidth / 2;
                 let boxY = headY - headRadius - boxHeight - 10;
 
                 ctx.beginPath();
@@ -1051,7 +1110,7 @@
                 }
 
                 ctx.beginPath();
-                const tipX = p.x;
+                const tipX = px;
                 const tipY = headY - headRadius + 2;
                 ctx.moveTo(tipX - 8, boxY + boxHeight);
                 ctx.lineTo(tipX + 3, boxY + boxHeight);
@@ -1063,7 +1122,7 @@
                 ctx.fillStyle = '#000';
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
-                ctx.fillText(text, p.x, boxY + boxHeight / 2);
+                ctx.fillText(text, px, boxY + boxHeight / 2);
             }
 
             ctx.restore();
@@ -1105,18 +1164,19 @@
                 const p = playersData[id];
                 p.radius = p.radius || 20;
 
+                const col = Math.floor(p.x / TILE_SIZE);
+                const row = Math.floor(p.y / TILE_SIZE);
+
                 if (id === socket.id) {
-                    player.x = p.x;
-                    player.y = p.y;
-                    player.color = p.color;
+                    player.row = row;
+                    player.col = col;
                     player.radius = p.radius;
                     player.name = p.name || player.name;
                     player.appearance = p.appearance || player.appearance;
                 } else {
                     otherPlayers[id] = {
-                        x: p.x,
-                        y: p.y,
-                        color: p.color,
+                        row,
+                        col,
                         radius: p.radius,
                         name: p.name || 'Kommer snart',
                         socketId: p.socketId,
@@ -1139,9 +1199,14 @@
 
         socket.on('newPlayer', (playerInfo) => {
             playerInfo.radius = playerInfo.radius || 20;
+            const col = Math.floor(playerInfo.x / TILE_SIZE);
+            const row = Math.floor(playerInfo.y / TILE_SIZE);
             otherPlayers[playerInfo.socketId] = {
-                ...playerInfo,
+                row,
+                col,
+                radius: playerInfo.radius,
                 name: playerInfo.name || 'Ny Spelare',
+                socketId: playerInfo.socketId,
                 chatMessage: null,
                 chatExpiresAt: null,
                 appearance: playerInfo.appearance || null
@@ -1151,19 +1216,24 @@
 
         socket.on('playerMoved', (playerInfo) => {
             playerInfo.radius = playerInfo.radius || 20;
+            const col = Math.floor(playerInfo.x / TILE_SIZE);
+            const row = Math.floor(playerInfo.y / TILE_SIZE);
+
             if (!otherPlayers[playerInfo.socketId]) {
                 otherPlayers[playerInfo.socketId] = {
-                    ...playerInfo,
+                    row,
+                    col,
+                    radius: playerInfo.radius,
                     name: playerInfo.name || 'Ny Spelare',
+                    socketId: playerInfo.socketId,
                     chatMessage: null,
                     chatExpiresAt: null,
                     appearance: playerInfo.appearance || null
                 };
             } else {
                 const op = otherPlayers[playerInfo.socketId];
-                op.x = playerInfo.x;
-                op.y = playerInfo.y;
-                op.color = playerInfo.color;
+                op.row = row;
+                op.col = col;
                 op.radius = playerInfo.radius;
                 op.name = playerInfo.name || op.name;
                 op.appearance = playerInfo.appearance || op.appearance;
@@ -1181,7 +1251,6 @@
                 player.appearance = { ...currentAppearance };
             } else if (otherPlayers[socketId]) {
                 otherPlayers[socketId].appearance = appearance;
-                otherPlayers[socketId].color = appearance.shirt || otherPlayers[socketId].color;
             }
         });
 
@@ -1220,14 +1289,14 @@
             }
         });
 
-        // EDIT ROOM – vänsterklick cyklar tiles
         canvas.addEventListener('click', (e) => {
             if (!isEditing || !isRoomOwner) return;
             const rect = canvas.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
-            const col = Math.floor(x / TILE_SIZE);
-            const row = Math.floor(y / TILE_SIZE);
+            const sx = e.clientX - rect.left;
+            const sy = e.clientY - rect.top;
+            const grid = screenToGrid(sx, sy);
+            if (!grid) return;
+            const { row, col } = grid;
             if (row <= 0 || row >= ROOM_ROWS - 1 || col <= 0 || col >= ROOM_COLS - 1) return;
             const currentTile = currentMap[row]?.[col] ?? 0;
             const newTile = (currentTile + 1) % 5; // 0..4
@@ -1239,25 +1308,24 @@
             });
         });
 
-        // HÖGERKLICK på guld–ruta = 4 i rad invite
         canvas.addEventListener('contextmenu', (e) => {
             e.preventDefault();
             if (!gameStarted) return;
             const rect = canvas.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
-            const col = Math.floor(x / TILE_SIZE);
-            const row = Math.floor(y / TILE_SIZE);
-            if (row < 0 || row >= ROOM_ROWS || col < 0 || col >= ROOM_COLS) return;
-            const tile = currentMap[row][col];
-            if (tile !== 4) return; // bara guld-ruta
+            const sx = e.clientX - rect.left;
+            const sy = e.clientY - rect.top;
+            const grid = screenToGrid(sx, sy);
+            if (!grid) return;
+            const { row, col } = grid;
+            const tile = currentMap[row]?.[col] ?? 1;
+            if (tile !== 4) return;
 
             const targetName = prompt('Vilken spelare vill du bjuda in till 4 i rad? (skriv exakt namn)');
             if (!targetName) return;
             socket.emit('c4_invite', { targetName });
         });
 
-        // CONNECT 4 CLIENT LOGIK
+        // CONNECT 4 klient
         function openC4Modal() {
             c4Modal.style.display = 'flex';
         }
@@ -1379,8 +1447,8 @@
             const now = Date.now();
 
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            drawMap();
 
+            drawMap();
             updatePlayerPosition();
 
             if (player.chatMessage && player.chatExpiresAt && now > player.chatExpiresAt) {
@@ -1395,10 +1463,15 @@
                 }
             }
 
-            drawPlayer(player, true, now);
+            // Rita spelare – sortera efter row+col så de bakre hamnar bakom
+            const allEntities = [
+                { ...player, isSelf: true, id: socket.id },
+                ...Object.entries(otherPlayers).map(([id, p]) => ({ ...p, isSelf: false, id }))
+            ];
+            allEntities.sort((a, b) => (a.row + a.col) - (b.row + b.col));
 
-            for (let id in otherPlayers) {
-                drawPlayer(otherPlayers[id], false, now);
+            for (const ent of allEntities) {
+                drawPlayer(ent, ent.isSelf, now);
             }
 
             ctx.fillStyle = 'rgba(255,255,255,0.9)';
