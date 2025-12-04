@@ -579,6 +579,7 @@
             shirt: '#3498db',
             pants: '#2c3e50'
         };
+        let ownedItems = [];
 
         // TILE / GRID
         const TILE_SIZE = 40;
@@ -588,8 +589,11 @@
         // ISOMETRISK
         const ISO_TILE_WIDTH = 48;
         const ISO_TILE_HEIGHT = 24;
-        const ISO_OFFSET_X = canvas.width / 2;  // mitt på canvas
-        const ISO_OFFSET_Y = 60;                // höjd offset, justera efter smak
+        const ISO_OFFSET_X = canvas.width / 2;
+        const ISO_OFFSET_Y = 60;
+
+        // SMOOTH MOVEMENT
+        const MOVE_TIME = 180; // ms per tile
 
         let player = {
             row: 0,
@@ -599,16 +603,19 @@
             name: 'Okänd',
             chatMessage: null,
             chatExpiresAt: null,
-            appearance: { ...currentAppearance }
+            appearance: { ...currentAppearance },
+            isoPrevX: 0,
+            isoPrevY: 0,
+            isoTargetX: 0,
+            isoTargetY: 0,
+            moveStartTime: 0,
+            moveDuration: 0
         };
-
-        const MOVE_DELAY = 130; // ms per tile-steg
-        let lastMoveTime = 0;
 
         let keys = {};
         let gameStarted = false;
 
-        // Tiles: 0=golv, 1=vägg, 2=matta, 3=block, 4=guld (4-i-rad)
+        // Tiles: 0=golv, 1=vägg, 2=matta, 3=block, 4=guld (4-i-rad), 5=tärning
         let currentMap = createBaseMap();
         let isEditing = false;
         let isRoomOwner = false;
@@ -636,7 +643,7 @@
         function canWalkTile(row, col) {
             if (row < 0 || row >= ROOM_ROWS || col < 0 || col >= ROOM_COLS) return false;
             const tile = currentMap[row]?.[col] ?? 1;
-            return tile === 0 || tile === 2 || tile === 4;
+            return tile === 0 || tile === 2 || tile === 4 || tile === 5;
         }
 
         function gridToIso(col, row) {
@@ -680,6 +687,8 @@
                 ctx.fillStyle = '#444444';
             } else if (tile === 4) {
                 ctx.fillStyle = '#DAA520';
+            } else if (tile === 5) {
+                ctx.fillStyle = '#f5f5dc'; // tärningsruta ljus
             } else {
                 ctx.fillStyle = '#101522';
             }
@@ -698,7 +707,6 @@
         }
 
         function drawMap() {
-            // Rita i rätt ordning (rad för rad) så saker bak hamnar bakom
             for (let row = 0; row < ROOM_ROWS; row++) {
                 for (let col = 0; col < ROOM_COLS; col++) {
                     const tile = currentMap[row][col];
@@ -794,15 +802,18 @@
             shopItemsData.forEach((item) => {
                 const div = document.createElement('div');
                 div.className = 'shop-item';
+                const owns = ownedItems.includes(item.id);
                 div.innerHTML = `
                     <div class="shop-item-main">
                         <div class="shop-item-name">${item.name}</div>
-                        <div class="shop-item-price">${item.price} coins</div>
+                        <div class="shop-item-price">${item.price} coins${owns ? ' (ägs)' : ''}</div>
                     </div>
-                    <button class="top-btn shop-buy-btn">Köp</button>
+                    <button class="top-btn shop-buy-btn"${owns ? ' disabled' : ''}>${owns ? 'Köpt' : 'Köp'}</button>
                 `;
                 const btn = div.querySelector('.shop-buy-btn');
-                btn.addEventListener('click', () => buyShopItem(item.id));
+                if (!owns) {
+                    btn.addEventListener('click', () => buyShopItem(item.id));
+                }
                 shopItemsEl.appendChild(div);
             });
         }
@@ -818,9 +829,13 @@
                 });
                 currentCoins = data.coins;
                 coinsValueEl.textContent = String(currentCoins);
-                applyAppearanceToPlayer(data.appearance || {});
-                player.appearance = { ...currentAppearance };
-                socket.emit('playerReady', { name: player.name, appearance: currentAppearance, username: currentUsername });
+                if (data.appearance) {
+                    applyAppearanceToPlayer(data.appearance || {});
+                    player.appearance = { ...currentAppearance };
+                    socket.emit('playerReady', { name: player.name, appearance: currentAppearance, username: currentUsername });
+                }
+                ownedItems = Array.isArray(data.items) ? data.items : ownedItems;
+                renderShopItems();
             } catch (err) {
                 shopError.textContent = err.message;
             }
@@ -852,6 +867,7 @@
 
                 applyAppearanceToPlayer(data.appearance || {});
                 player.name = data.username;
+                ownedItems = Array.isArray(data.items) ? data.items : [];
 
                 nameModal.style.display = 'none';
                 gameStarted = true;
@@ -890,6 +906,7 @@
 
                 applyAppearanceToPlayer(data.appearance || {});
                 player.name = data.username;
+                ownedItems = Array.isArray(data.items) ? data.items : [];
 
                 nameModal.style.display = 'none';
                 gameStarted = true;
@@ -1012,7 +1029,11 @@
 
         function updatePlayerPosition() {
             const now = Date.now();
-            if (now - lastMoveTime < MOVE_DELAY) return;
+
+            // Om vi fortfarande är mitt i en animation → vänta
+            if (now < player.moveStartTime + player.moveDuration) {
+                return;
+            }
 
             let dRow = 0;
             let dCol = 0;
@@ -1029,15 +1050,23 @@
 
             if (!canWalkTile(newRow, newCol)) return;
 
+            const oldPos = gridToIso(player.col, player.row);
+            const newPos = gridToIso(newCol, newRow);
+
             player.row = newRow;
             player.col = newCol;
+
+            player.isoPrevX = oldPos.x;
+            player.isoPrevY = oldPos.y;
+            player.isoTargetX = newPos.x;
+            player.isoTargetY = newPos.y;
+            player.moveStartTime = now;
+            player.moveDuration = MOVE_TIME;
 
             const worldX = player.col * TILE_SIZE + TILE_SIZE / 2;
             const worldY = player.row * TILE_SIZE + TILE_SIZE / 2;
 
             socket.emit('playerMovement', { x: worldX, y: worldY });
-
-            lastMoveTime = now;
         }
 
         function drawPlayer(p, isSelf = false, nowTime = Date.now()) {
@@ -1047,9 +1076,23 @@
             const shirt = appearance.shirt || p.color || '#3498db';
             const pants = appearance.pants || '#2c3e50';
 
-            const pos = gridToIso(p.col, p.row);
-            const px = pos.x;
-            const py = pos.y;
+            let px, py;
+            if (typeof p.isoPrevX === 'number' && typeof p.isoTargetX === 'number' && p.moveDuration > 0) {
+                const elapsed = nowTime - (p.moveStartTime || 0);
+                let t = p.moveDuration > 0 ? elapsed / p.moveDuration : 1;
+                if (t < 0) t = 0;
+                if (t > 1) t = 1;
+                const fromX = p.isoPrevX;
+                const fromY = p.isoPrevY;
+                const toX = p.isoTargetX;
+                const toY = p.isoTargetY;
+                px = fromX + (toX - fromX) * t;
+                py = fromY + (toY - fromY) * t;
+            } else {
+                const pos = gridToIso(p.col, p.row);
+                px = pos.x;
+                py = pos.y;
+            }
 
             ctx.save();
 
@@ -1166,6 +1209,7 @@
 
                 const col = Math.floor(p.x / TILE_SIZE);
                 const row = Math.floor(p.y / TILE_SIZE);
+                const pos = gridToIso(col, row);
 
                 if (id === socket.id) {
                     player.row = row;
@@ -1173,6 +1217,12 @@
                     player.radius = p.radius;
                     player.name = p.name || player.name;
                     player.appearance = p.appearance || player.appearance;
+                    player.isoPrevX = pos.x;
+                    player.isoPrevY = pos.y;
+                    player.isoTargetX = pos.x;
+                    player.isoTargetY = pos.y;
+                    player.moveStartTime = 0;
+                    player.moveDuration = 0;
                 } else {
                     otherPlayers[id] = {
                         row,
@@ -1182,7 +1232,13 @@
                         socketId: p.socketId,
                         chatMessage: null,
                         chatExpiresAt: null,
-                        appearance: p.appearance || null
+                        appearance: p.appearance || null,
+                        isoPrevX: pos.x,
+                        isoPrevY: pos.y,
+                        isoTargetX: pos.x,
+                        isoTargetY: pos.y,
+                        moveStartTime: 0,
+                        moveDuration: 0
                     };
                 }
             }
@@ -1201,6 +1257,7 @@
             playerInfo.radius = playerInfo.radius || 20;
             const col = Math.floor(playerInfo.x / TILE_SIZE);
             const row = Math.floor(playerInfo.y / TILE_SIZE);
+            const pos = gridToIso(col, row);
             otherPlayers[playerInfo.socketId] = {
                 row,
                 col,
@@ -1209,7 +1266,13 @@
                 socketId: playerInfo.socketId,
                 chatMessage: null,
                 chatExpiresAt: null,
-                appearance: playerInfo.appearance || null
+                appearance: playerInfo.appearance || null,
+                isoPrevX: pos.x,
+                isoPrevY: pos.y,
+                isoTargetX: pos.x,
+                isoTargetY: pos.y,
+                moveStartTime: 0,
+                moveDuration: 0
             };
             updatePlayerList();
         });
@@ -1218,8 +1281,10 @@
             playerInfo.radius = playerInfo.radius || 20;
             const col = Math.floor(playerInfo.x / TILE_SIZE);
             const row = Math.floor(playerInfo.y / TILE_SIZE);
+            const now = Date.now();
 
             if (!otherPlayers[playerInfo.socketId]) {
+                const pos = gridToIso(col, row);
                 otherPlayers[playerInfo.socketId] = {
                     row,
                     col,
@@ -1228,15 +1293,29 @@
                     socketId: playerInfo.socketId,
                     chatMessage: null,
                     chatExpiresAt: null,
-                    appearance: playerInfo.appearance || null
+                    appearance: playerInfo.appearance || null,
+                    isoPrevX: pos.x,
+                    isoPrevY: pos.y,
+                    isoTargetX: pos.x,
+                    isoTargetY: pos.y,
+                    moveStartTime: 0,
+                    moveDuration: 0
                 };
             } else {
                 const op = otherPlayers[playerInfo.socketId];
+                const oldPos = gridToIso(op.col, op.row);
+                const newPos = gridToIso(col, row);
                 op.row = row;
                 op.col = col;
                 op.radius = playerInfo.radius;
                 op.name = playerInfo.name || op.name;
                 op.appearance = playerInfo.appearance || op.appearance;
+                op.isoPrevX = oldPos.x;
+                op.isoPrevY = oldPos.y;
+                op.isoTargetX = newPos.x;
+                op.isoTargetY = newPos.y;
+                op.moveStartTime = now;
+                op.moveDuration = MOVE_TIME;
             }
         });
 
@@ -1299,7 +1378,13 @@
             const { row, col } = grid;
             if (row <= 0 || row >= ROOM_ROWS - 1 || col <= 0 || col >= ROOM_COLS - 1) return;
             const currentTile = currentMap[row]?.[col] ?? 0;
-            const newTile = (currentTile + 1) % 5; // 0..4
+            const newTile = (currentTile + 1) % 6; // 0..5
+
+            if (newTile === 5 && !ownedItems.includes('dice_tile')) {
+                alert('Du måste köpa Tärningsruta i shopen först!');
+                return;
+            }
+
             socket.emit('editTile', {
                 roomId: currentRoomId,
                 row,
@@ -1318,11 +1403,15 @@
             if (!grid) return;
             const { row, col } = grid;
             const tile = currentMap[row]?.[col] ?? 1;
-            if (tile !== 4) return;
 
-            const targetName = prompt('Vilken spelare vill du bjuda in till 4 i rad? (skriv exakt namn)');
-            if (!targetName) return;
-            socket.emit('c4_invite', { targetName });
+            if (tile === 4) {
+                const targetName = prompt('Vilken spelare vill du bjuda in till 4 i rad? (skriv exakt namn)');
+                if (!targetName) return;
+                socket.emit('c4_invite', { targetName });
+            } else if (tile === 5) {
+                // Tärningsruta: rulla tärning
+                socket.emit('diceRoll', { row, col });
+            }
         });
 
         // CONNECT 4 klient
@@ -1439,6 +1528,28 @@
             }, 2500);
         });
 
+        // TÄRNING – klient
+        socket.on('diceRolled', (data) => {
+            if (data.roomId !== currentRoomId) return;
+            const msg = `${data.rollerName || 'Spelare'} slog en ${data.result} med tärningen!`;
+            const item = document.createElement('div');
+            item.innerHTML = `<strong>Tärning:</strong> ${msg}`;
+            chatMessages.appendChild(item);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+
+            const now = Date.now();
+            const applyBubble = (p) => {
+                p.chatMessage = `🎲 ${data.result}`;
+                p.chatExpiresAt = now + 3000;
+            };
+
+            if (data.rollerId === socket.id) {
+                applyBubble(player);
+            } else if (otherPlayers[data.rollerId]) {
+                applyBubble(otherPlayers[data.rollerId]);
+            }
+        });
+
         function gameLoop() {
             if (!gameStarted) {
                 requestAnimationFrame(gameLoop);
@@ -1463,7 +1574,7 @@
                 }
             }
 
-            // Rita spelare – sortera efter row+col så de bakre hamnar bakom
+            // Rita spelare – sortera efter row+col
             const allEntities = [
                 { ...player, isSelf: true, id: socket.id },
                 ...Object.entries(otherPlayers).map(([id, p]) => ({ ...p, isSelf: false, id }))

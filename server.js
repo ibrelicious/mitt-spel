@@ -40,8 +40,9 @@ const DEFAULT_COINS = 100;
 // 2 = matta (walkable)
 // 3 = block/möbel (block)
 // 4 = guld–ruta (walkable, start 4 i rad)
+// 5 = tärningsruta (walkable, tärningsobjekt)
 
-// Enkel shop med outfits
+// Enkel shop med outfits + tärningsruta
 const SHOP_ITEMS = [
   {
     id: 'outfit_blue',
@@ -72,6 +73,22 @@ const SHOP_ITEMS = [
       shirt: '#27ae60',
       pants: '#145a32'
     }
+  },
+  {
+    id: 'outfit_purple',
+    name: 'Lila outfit',
+    price: 30,
+    appearance: {
+      skin: '#f1c27d',
+      shirt: '#8e44ad',
+      pants: '#2c3e50'
+    }
+  },
+  {
+    id: 'dice_tile',
+    name: 'Tärningsruta',
+    price: 15,
+    type: 'dice'
   }
 ];
 
@@ -94,8 +111,8 @@ function createBaseMap() {
 }
 
 function isWalkableTile(tile) {
-  // golv, matta, guld-ruta
-  return tile === 0 || tile === 2 || tile === 4;
+  // golv, matta, guld-ruta, tärningsruta
+  return tile === 0 || tile === 2 || tile === 4 || tile === 5;
 }
 
 function canWalk(map, x, y) {
@@ -150,6 +167,10 @@ function loadUsers() {
     }
     if (typeof user.coins !== 'number') {
       user.coins = DEFAULT_COINS;
+      changed = true;
+    }
+    if (!Array.isArray(user.items)) {
+      user.items = [];
       changed = true;
     }
   }
@@ -344,7 +365,8 @@ app.post('/api/register', async (req, res) => {
     users[trimmedUser] = {
       passwordHash: hash,
       appearance: { ...APPEARANCE_DEFAULT },
-      coins: DEFAULT_COINS
+      coins: DEFAULT_COINS,
+      items: []
     };
     saveUsers();
     return res.json({ ok: true, message: 'Konto skapat.' });
@@ -388,12 +410,14 @@ app.post('/api/login', async (req, res) => {
 
     const appearance = user.appearance || { ...APPEARANCE_DEFAULT };
     const coins = typeof user.coins === 'number' ? user.coins : DEFAULT_COINS;
+    const items = Array.isArray(user.items) ? user.items : [];
 
     return res.json({
       ok: true,
       username: trimmedUser,
       appearance,
-      coins
+      coins,
+      items
     });
   } catch (err) {
     console.error('Fel vid login:', err);
@@ -466,21 +490,32 @@ app.post('/api/buyItem', (req, res) => {
 
   const user = users[trimmedUser];
   if (typeof user.coins !== 'number') user.coins = DEFAULT_COINS;
+  if (!Array.isArray(user.items)) user.items = [];
 
   if (user.coins < item.price) {
     return res.status(400).json({ ok: false, message: 'För lite coins.' });
   }
 
   user.coins -= item.price;
-  user.appearance = {
-    skin: item.appearance.skin || APPEARANCE_DEFAULT.skin,
-    shirt: item.appearance.shirt || APPEARANCE_DEFAULT.shirt,
-    pants: item.appearance.pants || APPEARANCE_DEFAULT.pants
-  };
+
+  // Tärningsruta
+  if (item.type === 'dice') {
+    if (!user.items.includes(item.id)) {
+      user.items.push(item.id);
+    }
+  } else {
+    // Vanlig outfit
+    user.appearance = {
+      skin: item.appearance.skin || APPEARANCE_DEFAULT.skin,
+      shirt: item.appearance.shirt || APPEARANCE_DEFAULT.shirt,
+      pants: item.appearance.pants || APPEARANCE_DEFAULT.pants
+    };
+  }
+
   saveUsers();
 
   const player = players[socketId];
-  if (player) {
+  if (player && item.type !== 'dice') {
     player.appearance = user.appearance;
     player.color = user.appearance.shirt;
     if (player.roomId) {
@@ -494,7 +529,8 @@ app.post('/api/buyItem', (req, res) => {
   return res.json({
     ok: true,
     coins: user.coins,
-    appearance: user.appearance
+    appearance: user.appearance,
+    items: user.items
   });
 });
 
@@ -649,7 +685,18 @@ io.on('connection', (socket) => {
 
     if (!Number.isInteger(r) || !Number.isInteger(c)) return;
     if (r <= 0 || r >= ROOM_ROWS - 1 || c <= 0 || c >= ROOM_COLS - 1) return;
-    if (![0, 1, 2, 3, 4].includes(t)) return;
+    if (![0, 1, 2, 3, 4, 5].includes(t)) return;
+
+    // Tärningsruta kräver att ägaren har köpt 'dice_tile'
+    if (t === 5) {
+      if (!room.owner) return;
+      const username = player.username || player.name;
+      if (!username || username !== room.owner) return;
+      const user = users[username];
+      if (!user || !Array.isArray(user.items) || !user.items.includes('dice_tile')) {
+        return;
+      }
+    }
 
     if (!room.map[r]) room.map[r] = [];
     room.map[r][c] = t;
@@ -806,6 +853,33 @@ io.on('connection', (socket) => {
       io.to(game.p1).emit('c4_end', endPayload);
       io.to(game.p2).emit('c4_end', endPayload);
     }
+  });
+
+  // Tärning – rulla
+  socket.on('diceRoll', (data) => {
+    const player = players[socket.id];
+    if (!player || !player.roomId) return;
+    const room = rooms[player.roomId];
+    if (!room) return;
+
+    const r = Number(data && data.row);
+    const c = Number(data && data.col);
+    if (!Number.isInteger(r) || !Number.isInteger(c)) return;
+    if (r < 0 || r >= ROOM_ROWS || c < 0 || c >= ROOM_COLS) return;
+
+    const tile = room.map[r]?.[c];
+    if (tile !== 5) return;
+
+    const result = Math.floor(Math.random() * 6) + 1;
+
+    io.to(room.id).emit('diceRolled', {
+      roomId: room.id,
+      row: r,
+      col: c,
+      result,
+      rollerId: socket.id,
+      rollerName: player.name || player.username || 'Spelare'
+    });
   });
 
   socket.on('disconnect', () => {
