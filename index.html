@@ -348,6 +348,71 @@
             margin-top: 6px;
             font-size: 13px;
         }
+
+        /* CONNECT 4 MODAL */
+        #c4Modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.85);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 120;
+        }
+        #c4Container {
+            background-color: #1a1a1a;
+            padding: 20px 24px;
+            border-radius: 8px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.5);
+            color: #fff;
+            min-width: 340px;
+        }
+        #c4Title {
+            margin-top: 0;
+            color: #ffd966;
+            margin-bottom: 8px;
+        }
+        #c4Status {
+            font-size: 13px;
+            margin-bottom: 8px;
+        }
+        #c4Board {
+            display: grid;
+            grid-template-columns: repeat(7, 40px);
+            grid-template-rows: repeat(6, 40px);
+            gap: 4px;
+            background: #004080;
+            padding: 6px;
+            border-radius: 6px;
+        }
+        .c4-cell {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: #001f3f;
+            cursor: pointer;
+            box-sizing: border-box;
+            border: 2px solid rgba(0,0,0,0.5);
+        }
+        .c4-cell.player1 {
+            background: #ff4136;
+        }
+        .c4-cell.player2 {
+            background: #ffdc00;
+        }
+        #c4Buttons {
+            display: flex;
+            justify-content: flex-end;
+            margin-top: 8px;
+        }
+
+        /* ROOM EDITOR BUTTON STATE */
+        .editing-on {
+            background-color: #f39c12 !important;
+        }
     </style>
 </head>
 <body>
@@ -410,6 +475,18 @@
                 <button id="shopCloseBtn" class="top-btn secondary">Stäng</button>
             </div>
             <div id="shopError"></div>
+        </div>
+    </div>
+
+    <!-- CONNECT 4 -->
+    <div id="c4Modal">
+        <div id="c4Container">
+            <h3 id="c4Title">4 i rad</h3>
+            <div id="c4Status"></div>
+            <div id="c4Board"></div>
+            <div id="c4Buttons">
+                <button id="c4CloseBtn" class="top-btn secondary">Stäng</button>
+            </div>
         </div>
     </div>
 
@@ -488,6 +565,12 @@
 
         const playerListEl = document.getElementById('playerList');
 
+        const c4Modal = document.getElementById('c4Modal');
+        const c4BoardEl = document.getElementById('c4Board');
+        const c4StatusEl = document.getElementById('c4Status');
+        const c4CloseBtn = document.getElementById('c4CloseBtn');
+        const c4TitleEl = document.getElementById('c4Title');
+
         let currentRoomId = 'lobby';
         let currentUsername = null;
         let currentCoins = 0;
@@ -516,10 +599,14 @@
         const ROOM_COLS = canvas.width / TILE_SIZE;
         const ROOM_ROWS = canvas.height / TILE_SIZE;
 
+        // Tiles: 0=golv, 1=vägg, 2=matta, 3=block, 4=guld (4-i-rad)
         let currentMap = createBaseMap();
         let isEditing = false;
         let isRoomOwner = false;
         let shopItemsData = [];
+
+        // CONNECT 4 client state
+        let currentC4Game = null; // {gameId, board, currentTurn, p1, p2}
 
         function createBaseMap() {
             const map = [];
@@ -537,12 +624,16 @@
             return map;
         }
 
+        function isWalkableTileClient(tile) {
+            return tile === 0 || tile === 2 || tile === 4;
+        }
+
         function canWalkClient(x, y) {
             const col = Math.floor(x / TILE_SIZE);
             const row = Math.floor(y / TILE_SIZE);
             if (row < 0 || row >= ROOM_ROWS || col < 0 || col >= ROOM_COLS) return false;
             const tile = currentMap[row][col];
-            return tile === 0 || tile === 2;
+            return isWalkableTileClient(tile);
         }
 
         function drawMap() {
@@ -558,6 +649,8 @@
                         ctx.fillStyle = '#5e2a1f'; // matta
                     } else if (tile === 3) {
                         ctx.fillStyle = '#444444'; // möbel/block
+                    } else if (tile === 4) {
+                        ctx.fillStyle = '#DAA520'; // guld-ruta
                     } else {
                         ctx.fillStyle = '#101522'; // golv
                     }
@@ -848,7 +941,13 @@
                 return;
             }
             isEditing = !isEditing;
-            editRoomBtn.textContent = isEditing ? 'Avsluta redigering' : 'Redigera rum';
+            if (isEditing) {
+                editRoomBtn.classList.add('editing-on');
+                editRoomBtn.textContent = 'Avsluta redigering';
+            } else {
+                editRoomBtn.classList.remove('editing-on');
+                editRoomBtn.textContent = 'Redigera rum';
+            }
         });
 
         socket.on('forceLogout', (reason) => {
@@ -1109,6 +1208,7 @@
             });
             isRoomOwner = !!(currentUsername && owner && owner === currentUsername);
             isEditing = false;
+            editRoomBtn.classList.remove('editing-on');
             editRoomBtn.textContent = 'Redigera rum';
             updatePlayerList();
         });
@@ -1120,6 +1220,7 @@
             }
         });
 
+        // EDIT ROOM – vänsterklick cyklar tiles
         canvas.addEventListener('click', (e) => {
             if (!isEditing || !isRoomOwner) return;
             const rect = canvas.getBoundingClientRect();
@@ -1129,13 +1230,145 @@
             const row = Math.floor(y / TILE_SIZE);
             if (row <= 0 || row >= ROOM_ROWS - 1 || col <= 0 || col >= ROOM_COLS - 1) return;
             const currentTile = currentMap[row]?.[col] ?? 0;
-            const newTile = (currentTile + 1) % 4;
+            const newTile = (currentTile + 1) % 5; // 0..4
             socket.emit('editTile', {
                 roomId: currentRoomId,
                 row,
                 col,
                 tile: newTile
             });
+        });
+
+        // HÖGERKLICK på guld–ruta = 4 i rad invite
+        canvas.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            if (!gameStarted) return;
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            const col = Math.floor(x / TILE_SIZE);
+            const row = Math.floor(y / TILE_SIZE);
+            if (row < 0 || row >= ROOM_ROWS || col < 0 || col >= ROOM_COLS) return;
+            const tile = currentMap[row][col];
+            if (tile !== 4) return; // bara guld-ruta
+
+            const targetName = prompt('Vilken spelare vill du bjuda in till 4 i rad? (skriv exakt namn)');
+            if (!targetName) return;
+            socket.emit('c4_invite', { targetName });
+        });
+
+        // CONNECT 4 CLIENT LOGIK
+        function openC4Modal() {
+            c4Modal.style.display = 'flex';
+        }
+
+        function closeC4Modal() {
+            c4Modal.style.display = 'none';
+            currentC4Game = null;
+        }
+
+        function renderC4Board() {
+            if (!currentC4Game) return;
+            const board = currentC4Game.board;
+            c4BoardEl.innerHTML = '';
+            for (let r = 0; r < board.length; r++) {
+                for (let c = 0; c < board[r].length; c++) {
+                    const cellVal = board[r][c];
+                    const div = document.createElement('div');
+                    div.className = 'c4-cell';
+                    if (cellVal === 1) div.classList.add('player1');
+                    if (cellVal === 2) div.classList.add('player2');
+                    div.dataset.col = c;
+                    div.addEventListener('click', () => {
+                        doC4Move(c);
+                    });
+                    c4BoardEl.appendChild(div);
+                }
+            }
+            updateC4Status();
+        }
+
+        function updateC4Status(message) {
+            if (!currentC4Game) {
+                c4StatusEl.textContent = '';
+                return;
+            }
+            if (message) {
+                c4StatusEl.textContent = message;
+                return;
+            }
+            const yourId = socket.id;
+            if (currentC4Game.currentTurn === yourId) {
+                c4StatusEl.textContent = 'Din tur';
+            } else {
+                c4StatusEl.textContent = 'Motståndarens tur';
+            }
+        }
+
+        function doC4Move(column) {
+            if (!currentC4Game) return;
+            if (currentC4Game.currentTurn !== socket.id) return;
+            socket.emit('c4_move', {
+                gameId: currentC4Game.gameId,
+                column
+            });
+        }
+
+        c4CloseBtn.addEventListener('click', () => {
+            closeC4Modal();
+        });
+
+        socket.on('c4_error', ({ message }) => {
+            alert(message || '4 i rad error.');
+        });
+
+        socket.on('c4_invited', ({ fromSocketId, fromName }) => {
+            const ok = confirm((fromName || 'En spelare') + ' bjuder in dig till 4 i rad. Vill du spela?');
+            if (ok) {
+                socket.emit('c4_accept', { fromSocketId });
+            }
+        });
+
+        socket.on('c4_start', (game) => {
+            currentC4Game = game;
+            const youAreP1 = (game.p1.socketId === socket.id);
+            const vsName = youAreP1 ? (game.p2.name || 'Spelare') : (game.p1.name || 'Spelare');
+            c4TitleEl.textContent = '4 i rad mot ' + vsName;
+            openC4Modal();
+            renderC4Board();
+        });
+
+        socket.on('c4_update', (data) => {
+            if (!currentC4Game || data.gameId !== currentC4Game.gameId) return;
+            currentC4Game.board = data.board;
+            currentC4Game.currentTurn = data.currentTurn;
+            renderC4Board();
+        });
+
+        socket.on('c4_end', (data) => {
+            if (!currentC4Game || data.gameId !== currentC4Game.gameId) return;
+            let msg = '';
+            if (data.reason === '4inrow') {
+                if (data.winnerSocketId === socket.id) {
+                    msg = 'Du vann 4 i rad!';
+                } else {
+                    msg = 'Du förlorade 4 i rad.';
+                }
+            } else if (data.reason === 'draw') {
+                msg = '4 i rad slutade oavgjort.';
+            } else if (data.reason === 'disconnect') {
+                if (data.winnerSocketId === socket.id) {
+                    msg = 'Du vann – motståndaren lämnade.';
+                } else {
+                    msg = 'Matchen avslutades (disconnect).';
+                }
+            } else {
+                msg = 'Matchen avslutades.';
+            }
+            updateC4Status(msg);
+            setTimeout(() => {
+                closeC4Modal();
+            }, 2500);
         });
 
         function gameLoop() {

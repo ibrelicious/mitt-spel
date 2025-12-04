@@ -34,7 +34,14 @@ const APPEARANCE_DEFAULT = {
 
 const DEFAULT_COINS = 100;
 
-// Enkel shop med färdiga outfits
+// Tiles:
+// 0 = golv (walkable)
+// 1 = vägg (block)
+// 2 = matta (walkable)
+// 3 = block/möbel (block)
+// 4 = guld–ruta (walkable, start 4 i rad)
+
+// Enkel shop med outfits
 const SHOP_ITEMS = [
   {
     id: 'outfit_blue',
@@ -87,7 +94,8 @@ function createBaseMap() {
 }
 
 function isWalkableTile(tile) {
-  return tile === 0 || tile === 2; // golv eller matta
+  // golv, matta, guld-ruta
+  return tile === 0 || tile === 2 || tile === 4;
 }
 
 function canWalk(map, x, y) {
@@ -135,7 +143,7 @@ function loadUsers() {
   }
 
   let changed = false;
-  for (const [username, user] of Object.entries(users)) {
+  for (const user of Object.values(users)) {
     if (!user.appearance) {
       user.appearance = { ...APPEARANCE_DEFAULT };
       changed = true;
@@ -217,11 +225,88 @@ function createRoom(name, ownerUsername) {
   rooms[id] = {
     id,
     name,
-    owner: ownerUsername || null, // konto-namn
+    owner: ownerUsername || null,
     map: createBaseMap()
   };
   saveRooms();
   return rooms[id];
+}
+
+// ---------- CONNECT 4 ----------
+const C4_COLS = 7;
+const C4_ROWS = 6;
+let connect4Games = {};
+let nextC4Id = 1;
+
+function createEmptyC4Board() {
+  const board = [];
+  for (let r = 0; r < C4_ROWS; r++) {
+    const row = [];
+    for (let c = 0; c < C4_COLS; c++) row.push(0);
+    board.push(row);
+  }
+  return board;
+}
+
+function checkC4Winner(board) {
+  for (let r = 0; r < C4_ROWS; r++) {
+    for (let c = 0; c < C4_COLS; c++) {
+      const p = board[r][c];
+      if (!p) continue;
+
+      // höger
+      if (
+        c + 3 < C4_COLS &&
+        board[r][c + 1] === p &&
+        board[r][c + 2] === p &&
+        board[r][c + 3] === p
+      ) {
+        return p;
+      }
+
+      // nedåt
+      if (
+        r + 3 < C4_ROWS &&
+        board[r + 1][c] === p &&
+        board[r + 2][c] === p &&
+        board[r + 3][c] === p
+      ) {
+        return p;
+      }
+
+      // diagonal ned-höger
+      if (
+        r + 3 < C4_ROWS &&
+        c + 3 < C4_COLS &&
+        board[r + 1][c + 1] === p &&
+        board[r + 2][c + 2] === p &&
+        board[r + 3][c + 3] === p
+      ) {
+        return p;
+      }
+
+      // diagonal ned-vänster
+      if (
+        r + 3 < C4_ROWS &&
+        c - 3 >= 0 &&
+        board[r + 1][c - 1] === p &&
+        board[r + 2][c - 2] === p &&
+        board[r + 3][c - 3] === p
+      ) {
+        return p;
+      }
+    }
+  }
+  return 0;
+}
+
+function isC4BoardFull(board) {
+  for (let r = 0; r < C4_ROWS; r++) {
+    for (let c = 0; c < C4_COLS; c++) {
+      if (board[r][c] === 0) return false;
+    }
+  }
+  return true;
 }
 
 // ---------- INIT ----------
@@ -316,7 +401,7 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// Uppdatera utseende (settings)
+// Uppdatera utseende
 app.post('/api/updateAppearance', (req, res) => {
   const { username, socketId, appearance } = req.body || {};
   const trimmedUser = String(username || '').trim();
@@ -362,7 +447,7 @@ app.get('/api/shop', (req, res) => {
   });
 });
 
-// Köp item i shopen
+// Köp item
 app.post('/api/buyItem', (req, res) => {
   const { username, socketId, itemId } = req.body || {};
   const trimmedUser = String(username || '').trim();
@@ -432,7 +517,7 @@ function joinPlayerToRoom(socket, roomId) {
   player.x = spawn.x;
   player.y = spawn.y;
 
-  // Skicka aktuell karta till den här spelaren
+  // Skicka karta till spelaren
   socket.emit('roomMapUpdated', { roomId, map: room.map });
 
   const roomPlayers = {};
@@ -550,7 +635,7 @@ io.on('connection', (socket) => {
     const { roomId, row, col, tile } = data || {};
     if (!roomId || roomId !== room.id) return;
 
-    // Endast rumsägaren får ändra
+    // Endast rumsägaren får ändra om rummet har owner
     if (room.owner) {
       const playerId = player.username || player.name;
       if (playerId !== room.owner) {
@@ -564,7 +649,7 @@ io.on('connection', (socket) => {
 
     if (!Number.isInteger(r) || !Number.isInteger(c)) return;
     if (r <= 0 || r >= ROOM_ROWS - 1 || c <= 0 || c >= ROOM_COLS - 1) return;
-    if (![0, 1, 2, 3].includes(t)) return;
+    if (![0, 1, 2, 3, 4].includes(t)) return;
 
     if (!room.map[r]) room.map[r] = [];
     room.map[r][c] = t;
@@ -574,12 +659,178 @@ io.on('connection', (socket) => {
     io.to(room.id).emit('roomMapUpdated', { roomId: room.id, map: room.map });
   });
 
+  // 4 i rad – bjuda in
+  socket.on('c4_invite', (data) => {
+    const player = players[socket.id];
+    if (!player || !player.roomId) return;
+    const room = rooms[player.roomId];
+    if (!room) return;
+
+    const targetNameRaw = data && data.targetName;
+    if (!targetNameRaw) return;
+    const targetName = String(targetNameRaw).trim();
+    if (!targetName) return;
+
+    let targetSocketId = null;
+    for (const [sid, p] of Object.entries(players)) {
+      if (
+        p.roomId === player.roomId &&
+        p.name &&
+        p.name.toLowerCase() === targetName.toLowerCase()
+      ) {
+        targetSocketId = sid;
+        break;
+      }
+    }
+    if (!targetSocketId) {
+      socket.emit('c4_error', { message: 'Ingen spelare med det namnet i rummet.' });
+      return;
+    }
+    if (targetSocketId === socket.id) {
+      socket.emit('c4_error', { message: 'Du kan inte bjuda in dig själv.' });
+      return;
+    }
+
+    io.to(targetSocketId).emit('c4_invited', {
+      fromSocketId: socket.id,
+      fromName: player.name || 'Spelare'
+    });
+  });
+
+  // 4 i rad – acceptera
+  socket.on('c4_accept', (data) => {
+    const fromSocketId = data && data.fromSocketId;
+    const playerB = players[socket.id];
+    const playerA = players[fromSocketId];
+    if (!playerA || !playerB) return;
+    if (!playerA.roomId || playerA.roomId !== playerB.roomId) return;
+    const roomId = playerA.roomId;
+
+    // kolla att ingen redan spelar
+    for (const game of Object.values(connect4Games)) {
+      if (
+        game.status === 'playing' &&
+        (game.p1 === socket.id ||
+          game.p2 === socket.id ||
+          game.p1 === fromSocketId ||
+          game.p2 === fromSocketId)
+      ) {
+        return;
+      }
+    }
+
+    const gameId = 'c4_' + nextC4Id++;
+    const board = createEmptyC4Board();
+
+    connect4Games[gameId] = {
+      id: gameId,
+      roomId,
+      p1: fromSocketId,
+      p2: socket.id,
+      board,
+      currentTurn: fromSocketId,
+      status: 'playing'
+    };
+
+    const payload = {
+      gameId,
+      roomId,
+      board,
+      currentTurn: fromSocketId,
+      p1: { socketId: fromSocketId, name: playerA.name },
+      p2: { socketId: socket.id, name: playerB.name }
+    };
+
+    io.to(fromSocketId).emit('c4_start', payload);
+    io.to(socket.id).emit('c4_start', payload);
+  });
+
+  // 4 i rad – drag
+  socket.on('c4_move', (data) => {
+    const gameId = data && data.gameId;
+    const col = data && Number(data.column);
+    if (!gameId || !Number.isInteger(col)) return;
+
+    const game = connect4Games[gameId];
+    if (!game || game.status !== 'playing') return;
+    if (socket.id !== game.currentTurn) return;
+    if (col < 0 || col >= C4_COLS) return;
+
+    const board = game.board;
+    let placedRow = -1;
+    const playerNum = socket.id === game.p1 ? 1 : 2;
+
+    for (let r = C4_ROWS - 1; r >= 0; r--) {
+      if (board[r][col] === 0) {
+        board[r][col] = playerNum;
+        placedRow = r;
+        break;
+      }
+    }
+    if (placedRow === -1) return; // kolumn full
+
+    const winner = checkC4Winner(board);
+    const full = isC4BoardFull(board);
+
+    game.currentTurn = socket.id === game.p1 ? game.p2 : game.p1;
+
+    const updatePayload = {
+      gameId,
+      board,
+      currentTurn: game.currentTurn,
+      lastMove: { row: placedRow, col, player: playerNum }
+    };
+
+    io.to(game.p1).emit('c4_update', updatePayload);
+    io.to(game.p2).emit('c4_update', updatePayload);
+
+    if (winner) {
+      game.status = 'finished';
+      const winnerSocketId = winner === 1 ? game.p1 : game.p2;
+      const endPayload = {
+        gameId,
+        winner,
+        winnerSocketId,
+        reason: '4inrow'
+      };
+      io.to(game.p1).emit('c4_end', endPayload);
+      io.to(game.p2).emit('c4_end', endPayload);
+    } else if (full) {
+      game.status = 'finished';
+      const endPayload = {
+        gameId,
+        winner: 0,
+        winnerSocketId: null,
+        reason: 'draw'
+      };
+      io.to(game.p1).emit('c4_end', endPayload);
+      io.to(game.p2).emit('c4_end', endPayload);
+    }
+  });
+
   socket.on('disconnect', () => {
     console.log('En spelare lämnade. ID:', socket.id);
 
     const player = players[socket.id];
     if (player && player.roomId) {
       io.to(player.roomId).emit('playerDisconnected', socket.id);
+    }
+
+    // 4 i rad – någon lämnar
+    for (const game of Object.values(connect4Games)) {
+      if (
+        game.status === 'playing' &&
+        (game.p1 === socket.id || game.p2 === socket.id)
+      ) {
+        game.status = 'finished';
+        const other = game.p1 === socket.id ? game.p2 : game.p1;
+        io.to(other).emit('c4_end', {
+          gameId: game.id,
+          winner: null,
+          winnerSocketId: other,
+          reason: 'disconnect'
+        });
+      }
     }
 
     for (const [username, sid] of Object.entries(onlineUsers)) {
