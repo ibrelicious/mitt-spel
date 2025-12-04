@@ -2,14 +2,17 @@
 const express = require('express');
 const http = require('http');
 const path = require('path');
+const fs = require('fs');
+const bcrypt = require('bcryptjs');
 const { Server } = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-// Serva alla filer (index.html m.m.) från samma mapp
+// Statisk frontend
 app.use(express.static(path.join(__dirname)));
+app.use(express.json()); // för JSON-body i /api/login och /api/register
 
 const ROOM_WIDTH = 800;
 const ROOM_HEIGHT = 600;
@@ -18,16 +21,103 @@ const DEFAULT_RADIUS = 20;
 // Alla spelare i minnet
 const players = {};
 
+// Enkel “databas” av användare
+// Format: { "username": { passwordHash: "..." } }
+const USERS_FILE = path.join(__dirname, 'users.json');
+let users = {};
+
+// Ladda användare från fil vid start
+function loadUsers() {
+  try {
+    const raw = fs.readFileSync(USERS_FILE, 'utf8');
+    users = JSON.parse(raw);
+    if (typeof users !== 'object' || users === null) {
+      users = {};
+    }
+  } catch (err) {
+    users = {};
+  }
+}
+
+// Spara användare till fil
+function saveUsers() {
+  fs.writeFile(USERS_FILE, JSON.stringify(users, null, 2), (err) => {
+    if (err) {
+      console.error('Kunde inte spara users.json:', err);
+    }
+  });
+}
+
+loadUsers();
+
 // Root-routen
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+// Skapa konto
+app.post('/api/register', async (req, res) => {
+  const { username, password } = req.body || {};
+
+  if (!username || !password) {
+    return res.status(400).json({ ok: false, message: 'Användarnamn och lösenord krävs.' });
+  }
+
+  const trimmedUser = String(username).trim();
+
+  if (trimmedUser.length < 2) {
+    return res.status(400).json({ ok: false, message: 'Användarnamnet måste vara minst 2 tecken.' });
+  }
+  if (password.length < 4) {
+    return res.status(400).json({ ok: false, message: 'Lösenordet måste vara minst 4 tecken.' });
+  }
+
+  if (users[trimmedUser]) {
+    return res.status(409).json({ ok: false, message: 'Användarnamnet är redan taget.' });
+  }
+
+  try {
+    const hash = await bcrypt.hash(password, 10);
+    users[trimmedUser] = {
+      passwordHash: hash
+    };
+    saveUsers();
+    return res.json({ ok: true, message: 'Konto skapat.' });
+  } catch (err) {
+    console.error('Fel vid register:', err);
+    return res.status(500).json({ ok: false, message: 'Internt fel. Försök igen.' });
+  }
+});
+
+// Logga in
+app.post('/api/login', async (req, res) => {
+  const { username, password } = req.body || {};
+  const trimmedUser = String(username || '').trim();
+
+  const user = users[trimmedUser];
+  if (!user) {
+    return res.status(401).json({ ok: false, message: 'Fel användarnamn eller lösenord.' });
+  }
+
+  try {
+    const match = await bcrypt.compare(password, user.passwordHash);
+    if (!match) {
+      return res.status(401).json({ ok: false, message: 'Fel användarnamn eller lösenord.' });
+    }
+
+    // Inloggningen lyckades
+    return res.json({ ok: true, username: trimmedUser });
+  } catch (err) {
+    console.error('Fel vid login:', err);
+    return res.status(500).json({ ok: false, message: 'Internt fel. Försök igen.' });
+  }
 });
 
 // Socket.io
 io.on('connection', (socket) => {
   console.log('En spelare anslöt! ID:', socket.id);
 
-  // Skapa ny spelare
+  // Skapa ny spelare (namn uppdateras när klienten loggar in)
   players[socket.id] = {
     x: Math.floor(Math.random() * (ROOM_WIDTH - 2 * DEFAULT_RADIUS)) + DEFAULT_RADIUS,
     y: Math.floor(Math.random() * (ROOM_HEIGHT - 2 * DEFAULT_RADIUS)) + DEFAULT_RADIUS,
@@ -42,10 +132,12 @@ io.on('connection', (socket) => {
   // Berätta för andra att en ny spelare kommit in
   socket.broadcast.emit('newPlayer', players[socket.id]);
 
-  // Spelaren har valt namn
+  // Spelaren berättar vilket namn den har (efter login)
   socket.on('playerReady', (data) => {
     if (!players[socket.id]) return;
-    players[socket.id].name = data.name;
+    if (data && data.name) {
+      players[socket.id].name = String(data.name);
+    }
     io.emit('playerReady', players[socket.id]);
   });
 
