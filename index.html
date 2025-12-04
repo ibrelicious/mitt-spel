@@ -437,7 +437,7 @@
             background-color: #1a1a1a;
             padding: 20px 24px;
             border-radius: 8px;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.5);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.5);
             color: #fff;
             min-width: 340px;
         }
@@ -689,7 +689,7 @@
         // SMOOTH MOVEMENT
         const MOVE_TIME = 180; // ms per tile
 
-        // SPRITES
+        // SPRITES (valfritt – fallback ritar ändå kroppen)
         const spriteImages = {};
         const DEFAULT_PLAYER_SPRITE_ID = 'player_default';
 
@@ -699,8 +699,7 @@
             spriteImages[id] = img;
         }
 
-        // Här kan du lägga riktiga PNG:er i /sprites/
-        // Byt filnamn om du använder andra assets.
+        // Lägg ev. riktiga sprites i /sprites/
         loadSprite('player_default', '/sprites/player_default.png');
         loadSprite('furn_chair_wood', '/sprites/furn_chair_wood.png');
         loadSprite('furn_table_small', '/sprites/furn_table_small.png');
@@ -945,16 +944,28 @@
             shopItemsData.forEach((item) => {
                 const div = document.createElement('div');
                 div.className = 'shop-item';
-                const owns = ownedItems.includes(item.id);
+
+                const isFurniture = item.type === 'furniture';
+                const ownsCount = ownedItems.filter((id) => id === item.id).length;
+                const ownsAny = ownsCount > 0;
+
+                const extraText = isFurniture
+                    ? (ownsAny ? ` (ägs: ${ownsCount} st)` : '')
+                    : (ownsAny ? ' (ägs)' : '');
+
+                const disabled = !isFurniture && ownsAny;
+
                 div.innerHTML = `
                     <div class="shop-item-main">
                         <div class="shop-item-name">${item.name}</div>
-                        <div class="shop-item-price">${item.price} coins${owns ? ' (ägs)' : ''}</div>
+                        <div class="shop-item-price">${item.price} coins${extraText}</div>
                     </div>
-                    <button class="top-btn shop-buy-btn"${owns ? ' disabled' : ''}>${owns ? 'Köpt' : 'Köp'}</button>
+                    <button class="top-btn shop-buy-btn"${disabled ? ' disabled' : ''}>
+                        ${isFurniture ? (ownsAny ? 'Köp igen' : 'Köp') : (ownsAny ? 'Köpt' : 'Köp')}
+                    </button>
                 `;
                 const btn = div.querySelector('.shop-buy-btn');
-                if (!owns) {
+                if (!disabled) {
                     btn.addEventListener('click', () => buyShopItem(item.id));
                 }
                 shopItemsEl.appendChild(div);
@@ -983,7 +994,6 @@
                 }
                 ownedItems = Array.isArray(data.items) ? data.items : ownedItems;
                 renderShopItems();
-                // även inventory kan uppdateras
                 if (inventoryModal.style.display === 'flex') {
                     renderInventoryItems();
                 }
@@ -1029,6 +1039,8 @@
                 if (seen.has(itemId)) return;
                 seen.add(itemId);
 
+                const count = ownedItems.filter((id) => id === itemId).length;
+
                 const div = document.createElement('div');
                 div.className = 'inventory-item';
                 if (selectedFurnitureItemId === itemId) {
@@ -1037,7 +1049,7 @@
                 div.innerHTML = `
                     <div class="inventory-item-main">
                         <div class="inventory-item-name">${def.name}</div>
-                        <div class="inventory-item-type">Möbel (placeras i rum)</div>
+                        <div class="inventory-item-type">Möbel (du har ${count} st)</div>
                     </div>
                     <span>${itemId === selectedFurnitureItemId ? 'Vald' : 'Klicka'}</span>
                 `;
@@ -1089,7 +1101,6 @@
 
                 nameModal.style.display = 'none';
                 gameStarted = true;
-                // ladda shop items i bakgrunden (för inventory/sprites)
                 loadShopItems().catch(() => {});
                 socket.emit('playerReady', { name: player.name, appearance: currentAppearance, username: currentUsername });
                 gameLoop();
@@ -1325,17 +1336,16 @@
 
             ctx.save();
 
-            // --- Sprite eller fallback ---
+            // Sprite eller fallback
             const spriteId = p.spriteId || DEFAULT_PLAYER_SPRITE_ID;
             const img = spriteImages[spriteId];
             if (img && img.complete) {
                 const w = img.width;
                 const h = img.height;
                 const drawX = px - w / 2;
-                const drawY = py - h + ISO_TILE_HEIGHT; // justering för fötter
+                const drawY = py - h + ISO_TILE_HEIGHT;
                 ctx.drawImage(img, drawX, drawY);
             } else {
-                // Fallback: enkel kropp
                 const bodyWidth = r * 1.4;
                 const bodyHeight = r * 1.6;
                 const bodyX = px - bodyWidth / 2;
@@ -1359,7 +1369,6 @@
                 ctx.stroke();
             }
 
-            // Namn
             const nameToDisplay = p.name || (isSelf ? 'DU' : 'KOMPIS'); 
             ctx.fillStyle = isSelf ? 'white' : '#f1f1f1';
             ctx.font = 'bold 14px Arial';
@@ -1367,7 +1376,6 @@
             ctx.textBaseline = 'middle';
             ctx.fillText(nameToDisplay, px, py + 24); 
 
-            // Chat-bubbla
             if (p.chatMessage && (!p.chatExpiresAt || nowTime <= p.chatExpiresAt)) {
                 const text = p.chatMessage;
                 ctx.font = '13px Arial';
@@ -1441,6 +1449,13 @@
             } else if (otherPlayers[data.senderId]) {
                 otherPlayers[data.senderId].chatMessage = data.message;
                 otherPlayers[data.senderId].chatExpiresAt = now + duration;
+            }
+        });
+
+        socket.on('coinsUpdated', (data) => {
+            if (data && typeof data.coins === 'number') {
+                currentCoins = data.coins;
+                coinsValueEl.textContent = String(currentCoins);
             }
         });
 
@@ -1847,31 +1862,21 @@
                 }
             }
 
-            // Rita i rätt djup-ordning: möbler + spelare
-            const drawables = [];
-
-            drawables.push({ kind: 'player', entity: player, isSelf: true });
-            Object.entries(otherPlayers).forEach(([id, op]) => {
-                drawables.push({ kind: 'player', entity: op, isSelf: false });
-            });
-
+            // Rita möbler (under spelarna)
             roomFurniture.forEach((f) => {
-                drawables.push({ kind: 'furniture', entity: f });
+                drawFurniture(f);
             });
 
-            drawables.sort((a, b) => {
-                const ea = a.entity;
-                const eb = b.entity;
-                return (ea.row + ea.col) - (eb.row + eb.col);
-            });
+            // Rita spelare – sortera efter row+col för djup
+            const allEntities = [
+                { ...player, isSelf: true, id: socket.id },
+                ...Object.entries(otherPlayers).map(([id, p]) => ({ ...p, isSelf: false, id }))
+            ];
+            allEntities.sort((a, b) => (a.row + a.col) - (b.row + b.col));
 
-            drawables.forEach((d) => {
-                if (d.kind === 'player') {
-                    drawPlayer(d.entity, d.isSelf, now);
-                } else {
-                    drawFurniture(d.entity);
-                }
-            });
+            for (const ent of allEntities) {
+                drawPlayer(ent, ent.isSelf, now);
+            }
 
             ctx.fillStyle = 'rgba(255,255,255,0.9)';
             ctx.font = '16px Arial';

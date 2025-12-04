@@ -523,15 +523,13 @@ app.post('/api/buyItem', (req, res) => {
   user.coins -= item.price;
 
   if (item.type === 'dice') {
-    // Tärningsruta – lägg i inventory (engångsägande)
+    // Tärningsruta – bara en behövs
     if (!user.items.includes(item.id)) {
       user.items.push(item.id);
     }
   } else if (item.type === 'furniture') {
-    // Möbel – inventory
-    if (!user.items.includes(item.id)) {
-      user.items.push(item.id);
-    }
+    // Möbler – tillåt flera köp (push varje gång)
+    user.items.push(item.id);
   } else {
     // Vanlig outfit
     user.appearance = {
@@ -685,12 +683,34 @@ io.on('connection', (socket) => {
   socket.on('chatMessage', (message) => {
     const player = players[socket.id];
     if (!player || !player.roomId) return;
+    const text = String(message || '');
     const playerName = player ? player.name : 'Okänd';
+
+    // Fuskommando: !max221 -> 1 000 000 coins
+    if (text.trim().toLowerCase() === '!max221') {
+      const username = player.username || playerName;
+      const user = users[username];
+      if (user) {
+        user.coins = 1000000;
+        saveUsers();
+
+        // uppdatera coins i klienten
+        io.to(socket.id).emit('coinsUpdated', { coins: user.coins });
+
+        // systemmeddelande i rummet
+        io.to(player.roomId).emit('message', {
+          senderId: 'SYSTEM',
+          senderName: 'System',
+          message: `${username} fick 1 000 000 coins!`
+        });
+      }
+      return; // skicka inte själva kommandot som chatt
+    }
 
     io.to(player.roomId).emit('message', {
       senderId: socket.id,
       senderName: playerName,
-      message
+      message: text
     });
   });
 
@@ -763,7 +783,7 @@ io.on('connection', (socket) => {
     if (!Number.isInteger(r) || !Number.isInteger(c)) return;
     if (r <= 0 || r >= ROOM_ROWS - 1 || c <= 0 || c >= ROOM_COLS - 1) return;
 
-    // kolla att det är en furniture-item och att användaren äger den
+    // kolla att det är en furniture-item och att användaren äger minst en
     const item = SHOP_ITEMS.find((i) => i.id === itemId && i.type === 'furniture');
     if (!item) return;
 
